@@ -1,0 +1,74 @@
+graph TB
+    subgraph Sources["Data Sources"]
+        APP["Go Microservices\n(order-service, user-service)"]
+        SRV["Servers (OS)"]
+        DB["PostgreSQL"]
+        CACHE["Redis"]
+        MQ["Kafka Cluster"]
+    end
+
+    subgraph Exporters["Exporters"]
+        APP_EXP["/metrics endpoint\n(built-in)"]
+        NODE_EXP["node_exporter\n:9100"]
+        PG_EXP["postgres_exporter\n:9187"]
+        REDIS_EXP["redis_exporter\n:9121"]
+        KAFKA_EXP["kafka_exporter\n:9308"]
+        ES_EXP["elasticsearch_exporter\n:9114"]
+    end
+
+    subgraph MetricsPipeline["Metrics Pipeline"]
+        PROM["Prometheus\n(TSDB, 15d retention)"]
+        AM["Alertmanager"]
+    end
+
+    subgraph LogsPipeline["Logs Pipeline"]
+        FB["Filebeat"]
+        KAFKA_BUF["Kafka Buffer\n(topic: logs-raw)"]
+        LS["Logstash\n(parse + enrich)"]
+        ES["Elasticsearch\n(full-text index)"]
+    end
+
+    subgraph Visualization["Visualization"]
+        GF["Grafana\n(Single Pane of Glass)"]
+        FE["Next.js Dashboard"]
+    end
+
+    subgraph Notifications["Notifications"]
+        SLACK["Slack\n(critical alerts)"]
+        EMAIL["Email\n(warning digest)"]
+    end
+
+    APP --> APP_EXP
+    SRV --> NODE_EXP
+    DB --> PG_EXP
+    CACHE --> REDIS_EXP
+    MQ --> KAFKA_EXP
+    ES --> ES_EXP
+
+    APP_EXP -->|"PULL /metrics"| PROM
+    NODE_EXP -->|"PULL /metrics"| PROM
+    PG_EXP -->|"PULL /metrics"| PROM
+    REDIS_EXP -->|"PULL /metrics"| PROM
+    KAFKA_EXP -->|"PULL /metrics"| PROM
+    ES_EXP -->|"PULL /metrics"| PROM
+
+    PROM -->|"alert rules"| AM
+    AM --> SLACK
+    AM --> EMAIL
+
+    APP -->|"stdout JSON logs"| FB
+    FB -->|"Mode A: direct"| LS
+    FB -->|"Mode B: buffer"| KAFKA_BUF
+    KAFKA_BUF --> LS
+    LS -->|"index per service/day"| ES
+
+    PROM -->|"PromQL"| GF
+    ES -->|"ES queries"| GF
+    GF -->|"embed iframe"| FE
+
+    style Sources fill:#e8f5e9,stroke:#2e7d32
+    style Exporters fill:#fff3e0,stroke:#ef6c00
+    style MetricsPipeline fill:#e3f2fd,stroke:#1565c0
+    style LogsPipeline fill:#fce4ec,stroke:#c62828
+    style Visualization fill:#f3e5f5,stroke:#6a1b9a
+    style Notifications fill:#fff8e1,stroke:#f9a825

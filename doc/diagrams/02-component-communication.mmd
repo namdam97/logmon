@@ -1,0 +1,58 @@
+graph LR
+    subgraph Backend["Backend Services"]
+        OS["order-service\n:8080/:9090"]
+        US["user-service\n:8081/:9091"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        PG[(PostgreSQL\n:5432)]
+        RD[(Redis\n:6379)]
+        KF["Kafka\n:9092"]
+        ZK["Zookeeper\n:2181"]
+    end
+
+    subgraph Monitoring["Monitoring Stack"]
+        PROM["Prometheus\n:9090"]
+        AM["Alertmanager\n:9093"]
+        FB["Filebeat"]
+        LS["Logstash\n:5044"]
+        ES["Elasticsearch\n:9200"]
+        GF["Grafana\n:3000"]
+    end
+
+    subgraph External["Exporters"]
+        NE["node_exporter\n:9100"]
+        PE["postgres_exporter\n:9187"]
+        RE["redis_exporter\n:9121"]
+        KE["kafka_exporter\n:9308"]
+    end
+
+    OS -->|"pgx/v5"| PG
+    US -->|"pgx/v5"| PG
+    OS -->|"go-redis"| RD
+    US -->|"go-redis"| RD
+
+    OS -.->|"HTTP REST"| US
+
+    OS -->|"stdout logs"| FB
+    US -->|"stdout logs"| FB
+    FB -->|"logs-raw topic"| KF
+    KF -->|"consume"| LS
+    LS -->|"bulk index"| ES
+    KF --- ZK
+
+    PROM -->|"scrape :9090"| OS
+    PROM -->|"scrape :9091"| US
+    PROM -->|"scrape :9100"| NE
+    PROM -->|"scrape :9187"| PE
+    PROM -->|"scrape :9121"| RE
+    PROM -->|"scrape :9308"| KE
+    PROM -->|"fire alerts"| AM
+
+    GF -->|"PromQL query"| PROM
+    GF -->|"ES query"| ES
+
+    style Backend fill:#c8e6c9,stroke:#2e7d32
+    style Infrastructure fill:#ffecb3,stroke:#ff8f00
+    style Monitoring fill:#bbdefb,stroke:#1565c0
+    style External fill:#f0f4c3,stroke:#827717

@@ -1,0 +1,20 @@
+flowchart TD
+    A["Prometheus\nEvaluate rules every 15s"] --> B{Rule match?}
+    B -->|No| A
+    B -->|Yes| C["Alert state: PENDING"]
+    C --> D{"Continuous violation\n>= 'for' duration?"}
+    D -->|Not yet| A
+    D -->|Yes| E["Alert state: FIRING"]
+    E --> F["Send to Alertmanager"]
+    F --> K{"Same service already\nhas critical alert?"}
+    K -->|Yes| L["Inhibit warning alerts\n(prevent alert storm)"]
+    K -->|No| G{"Severity?"}
+    G -->|critical| H["Slack Webhook\n(immediate, < 5 min)"]
+    G -->|warning| I["Email Digest\n(batch 15 min)"]
+    G -->|info| J["Log only\n(no notification)"]
+
+    style E fill:#ff8a80,stroke:#c62828
+    style H fill:#ff8a80,stroke:#c62828
+    style I fill:#fff176,stroke:#f9a825
+    style J fill:#b3e5fc,stroke:#0277bd
+    style L fill:#e0e0e0,stroke:#757575

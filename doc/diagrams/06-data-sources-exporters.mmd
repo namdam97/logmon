@@ -1,0 +1,34 @@
+graph LR
+    subgraph Applications["Applications"]
+        GO["Go Services"]
+    end
+    subgraph Servers["Servers"]
+        HOST["Linux Hosts"]
+    end
+    subgraph Databases["Databases"]
+        PG["PostgreSQL"]
+    end
+    subgraph Infra["Infrastructure"]
+        RD["Redis"]
+        KF["Kafka"]
+        ESC["Elasticsearch"]
+    end
+
+    GO -->|"built-in /metrics"| M1["logmon_http_requests_total\nlogmon_http_request_duration_seconds\nlogmon_http_requests_in_flight"]
+    HOST -->|"node_exporter :9100"| M2["CPU, RAM, Disk I/O\nNetwork, Load Average"]
+    PG -->|"postgres_exporter :9187"| M3["Connections, Query Duration\nReplication Lag, Dead Tuples"]
+    RD -->|"redis_exporter :9121"| M4["Memory, Hit Rate\nConnected Clients"]
+    KF -->|"kafka_exporter :9308"| M5["Consumer Lag\nTopic Throughput"]
+    ESC -->|"es_exporter :9114"| M6["Cluster Health\nIndex Size, Shard Stats"]
+
+    M1 --> PROM["Prometheus"]
+    M2 --> PROM
+    M3 --> PROM
+    M4 --> PROM
+    M5 --> PROM
+    M6 --> PROM
+
+    style Applications fill:#c8e6c9,stroke:#2e7d32
+    style Servers fill:#e1bee7,stroke:#6a1b9a
+    style Databases fill:#bbdefb,stroke:#1565c0
+    style Infra fill:#ffecb3,stroke:#ff8f00

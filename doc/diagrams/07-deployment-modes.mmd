@@ -1,0 +1,16 @@
+graph TB
+    subgraph ModeA["Mode A - Small (dev/staging, < 5K logs/s)"]
+        A1["Go Services"] -->|stdout| A2["Filebeat"]
+        A2 -->|direct| A3["Logstash"]
+        A3 --> A4["Elasticsearch"]
+    end
+
+    subgraph ModeB["Mode B - Scale (production, > 10K logs/s)"]
+        B1["Go Services"] -->|stdout| B2["Filebeat"]
+        B2 -->|produce| B3["Kafka\n(3 brokers + ZK)"]
+        B3 -->|consume| B4["Logstash"]
+        B4 --> B5["Elasticsearch"]
+    end
+
+    style ModeA fill:#e8f5e9,stroke:#2e7d32
+    style ModeB fill:#fff3e0,stroke:#ef6c00

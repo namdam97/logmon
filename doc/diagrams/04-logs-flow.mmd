@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant SVC as Go Service
+    participant FB as Filebeat
+    participant KF as Kafka<br/>(Mode B only)
+    participant LS as Logstash
+    participant ES as Elasticsearch
+    participant GF as Grafana
+
+    SVC->>SVC: zerolog JSON stdout
+    Note over SVC: {"timestamp":"...","level":"info",<br/>"service":"order-service",<br/>"trace_id":"abc-123","message":"..."}
+
+    FB->>FB: Collect Docker container logs
+
+    alt Mode A - Small (< 5K logs/s)
+        FB->>LS: Direct forward
+    else Mode B - Scale (> 10K logs/s)
+        FB->>KF: Produce topic "logs-raw"
+        Note over KF: Buffer 24h, 3 partitions
+        KF->>LS: Consumer group "logstash-consumer"
+    end
+
+    LS->>LS: Parse JSON
+    LS->>LS: Extract @timestamp
+    LS->>LS: Enrich (mutate fields)
+    LS->>LS: Error pattern grok
+
+    alt Parse OK
+        LS->>ES: Bulk index logs-{service}-{yyyy.MM.dd}
+    else Parse failed
+        LS->>KF: Dead letter topic "logs-dlq"
+    end
+
+    ES->>ES: ILM: hot(7d) warm(30d) delete(90d)
+
+    GF->>ES: Elasticsearch query
+    ES-->>GF: Log entries
+    GF->>GF: Render log explorer

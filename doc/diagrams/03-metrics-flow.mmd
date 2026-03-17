@@ -1,0 +1,35 @@
+sequenceDiagram
+    participant SVC as Go Service
+    participant EXP as Exporter<br/>(node/pg/redis/kafka)
+    participant PROM as Prometheus
+    participant AM as Alertmanager
+    participant GF as Grafana
+    participant SLACK as Slack/Email
+
+    Note over SVC: Expose /metrics endpoint<br/>(Counter, Histogram, Gauge)
+
+    loop Every 15s (services) / 60s (infra)
+        PROM->>SVC: GET /metrics
+        SVC-->>PROM: metrics data (text/plain)
+        PROM->>EXP: GET /metrics
+        EXP-->>PROM: infrastructure metrics
+    end
+
+    PROM->>PROM: Store in TSDB (retention 15 days)
+
+    loop Every 15s (evaluation)
+        PROM->>PROM: Evaluate alert rules
+        alt Rule match (firing)
+            PROM->>AM: POST /api/v2/alerts
+            AM->>AM: Route by severity
+            alt severity = critical
+                AM->>SLACK: Webhook (< 5 min)
+            else severity = warning
+                AM->>SLACK: Email digest (batch 15 min)
+            end
+        end
+    end
+
+    GF->>PROM: PromQL query
+    PROM-->>GF: Time-series data
+    GF->>GF: Render dashboard
