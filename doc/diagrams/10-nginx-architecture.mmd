@@ -1,0 +1,21 @@
+flowchart LR
+    USER["Users\n(Internet)"] -->|"HTTPS :443"| NGX["Nginx\nReverse Proxy\nSSL Termination"]
+
+    NGX -->|"/api/*\nport 8080"| BE["Backend\n(Go Services)"]
+    NGX -->|"/*\nport 3000"| FE["Frontend\n(Next.js)"]
+    NGX -->|"/grafana/*\nport 3001"| GF["Grafana\nDashboards"]
+
+    BE -->|":9090"| PROM["Prometheus\nScrape"]
+    BE -->|"stdout"| FB["Filebeat\nLog Collect"]
+
+    subgraph Docker["Docker Compose Network"]
+        BE
+        FE
+        GF
+        PROM
+        FB
+    end
+
+    style USER fill:#ffcdd2,stroke:#c62828
+    style NGX fill:#f3e5f5,stroke:#6a1b9a
+    style Docker fill:#e8f5e9,stroke:#2e7d32

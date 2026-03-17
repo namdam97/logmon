@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant DEV as Developer
+    participant GIT as Git Repo
+    participant CI as CI Pipeline
+    participant REG as Container Registry
+    participant SRV as Ubuntu Server
+    participant NGX as Nginx
+    participant MON as Monitoring Stack
+
+    DEV->>GIT: git push (feature branch)
+    GIT->>CI: Webhook trigger
+
+    rect rgb(227, 242, 253)
+        Note over CI: CI Stage
+        CI->>CI: go test ./...
+        CI->>CI: golangci-lint run
+        CI->>CI: pnpm test (frontend)
+        CI->>CI: docker build -t logmon-backend:v1.2
+        CI->>CI: docker build -t logmon-frontend:v1.2
+        CI->>REG: docker push (2 images)
+    end
+
+    DEV->>GIT: Merge to main
+
+    rect rgb(255, 243, 224)
+        Note over CI: CD Stage
+        CI->>SRV: SSH + docker compose pull
+        SRV->>REG: Pull new images
+        SRV->>SRV: docker compose up -d
+        SRV->>SRV: Health check (curl /health)
+    end
+
+    SRV->>NGX: Containers ready on ports
+    NGX->>NGX: Reverse proxy + SSL
+
+    rect rgb(232, 245, 233)
+        Note over MON: Post-Deploy Verify
+        SRV->>MON: Prometheus scrape /metrics
+        SRV->>MON: Filebeat collect logs
+        MON->>MON: Check error rate spike
+        MON-->>DEV: Alert if deploy broken
+    end

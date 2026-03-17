@@ -678,3 +678,514 @@ Mode A (small, no Kafka) cho dev/staging. Mode B (with Kafka) cho production. Do
 | **DevOps** | Infrastructure health, container status | `infrastructure.json` | Monitor CPU/RAM/disk, restart containers |
 | **Developer** | Debug errors, trace requests | `service-overview.json` + `logs-explorer.json` | Search by trace_id, filter error logs |
 | **SRE** | SLI/SLO tracking, incident response | `slo-dashboard.json` | Track error budget, manage on-call alerts |
+
+---
+
+## 13. Hướng Dẫn Deploy & DevOps Pipeline
+
+### 13.1 Tổng Quan DevOps Pipeline
+
+DevOps không phải là một "vị trí" mà là một **luồng công việc (workflow)** — từ viết code đến vận hành production. LogMon áp dụng DevOps Infinity Loop: **Plan → Code → Build → Test → Release → Deploy → Operate → Monitor → Plan...**
+
+> ![DevOps Pipeline](diagrams/08-devops-pipeline.png)
+>
+> Sơ đồ: [diagrams/08-devops-pipeline.mmd](diagrams/08-devops-pipeline.mmd)
+
+```mermaid
+flowchart TB
+    subgraph DEV["DEV (Local)"]
+        CODE["Developer\nVS Code"]
+        DOCKER_LOCAL["Docker\nBuild & Test"]
+    end
+
+    subgraph CI["CI - Continuous Integration"]
+        GIT["Git Push\n(GitHub/GitLab)"]
+        TEST["Run Tests\ngo test / pnpm test"]
+        LINT["Lint & Vet\ngolangci-lint / eslint"]
+        BUILD["Docker Build\ndocker build -t ..."]
+        REGISTRY["Container Registry\n(Docker Hub / GHCR)"]
+    end
+
+    subgraph CD["CD - Continuous Deployment"]
+        STAGING["Staging\nDocker Compose\n(Ubuntu VPS)"]
+        PROD_COMPOSE["Production (Small)\nDocker Compose\n(Ubuntu VPS)"]
+        PROD_K8S["Production (Scale)\nKubernetes\n(Cloud)"]
+    end
+
+    subgraph INFRA["Infrastructure"]
+        NGINX["Nginx\nReverse Proxy\nSSL Termination"]
+        UBUNTU["Ubuntu Server\n22.04 LTS"]
+        CLOUD["Cloud Provider\n(AWS/Azure/GCP)"]
+    end
+
+    CODE -->|"git push"| GIT
+    CODE --> DOCKER_LOCAL
+    GIT -->|"trigger"| TEST
+    TEST -->|"pass"| LINT
+    LINT -->|"pass"| BUILD
+    BUILD -->|"push image"| REGISTRY
+
+    REGISTRY -->|"deploy"| STAGING
+    REGISTRY -->|"promote"| PROD_COMPOSE
+    REGISTRY -->|"kubectl apply"| PROD_K8S
+
+    STAGING --> UBUNTU
+    PROD_COMPOSE --> UBUNTU
+    PROD_K8S --> CLOUD
+    UBUNTU --> NGINX
+    CLOUD --> NGINX
+
+    style DEV fill:#e8f5e9,stroke:#2e7d32
+    style CI fill:#e3f2fd,stroke:#1565c0
+    style CD fill:#fff3e0,stroke:#ef6c00
+    style INFRA fill:#f3e5f5,stroke:#6a1b9a
+```
+
+### 13.2 Các Tầng Hạ Tầng
+
+| Tầng | Công nghệ | Vai trò trong LogMon |
+|------|-----------|---------------------|
+| **Hệ điều hành** | Ubuntu 22.04 LTS | Server chạy Docker, nhẹ, bảo mật, ecosystem lớn |
+| **Web Server** | Nginx | Reverse proxy, SSL termination, load balancing |
+| **Containerization** | Docker + Docker Compose | Đóng gói services, đảm bảo "build once, run anywhere" |
+| **Orchestration** | Docker Compose (small) / K8s (scale) | Quản lý vòng đời containers |
+| **CI/CD** | GitHub Actions / GitLab CI / Azure DevOps | Tự động test → build → deploy |
+| **Cloud** | AWS / Azure / GCP (khi cần scale) | Compute, networking, managed services |
+
+### 13.3 Luồng Deploy Chi Tiết
+
+> ![Deploy Flow](diagrams/09-deploy-flow.png)
+>
+> Sơ đồ: [diagrams/09-deploy-flow.mmd](diagrams/09-deploy-flow.mmd)
+
+```mermaid
+sequenceDiagram
+    participant DEV as Developer
+    participant GIT as Git Repo
+    participant CI as CI Pipeline
+    participant REG as Container Registry
+    participant SRV as Ubuntu Server
+    participant NGX as Nginx
+    participant MON as Monitoring Stack
+
+    DEV->>GIT: git push (feature branch)
+    GIT->>CI: Webhook trigger
+
+    rect rgb(227, 242, 253)
+        Note over CI: CI Stage
+        CI->>CI: go test ./...
+        CI->>CI: golangci-lint run
+        CI->>CI: pnpm test (frontend)
+        CI->>CI: docker build -t logmon-backend:v1.2
+        CI->>CI: docker build -t logmon-frontend:v1.2
+        CI->>REG: docker push (2 images)
+    end
+
+    DEV->>GIT: Merge to main
+
+    rect rgb(255, 243, 224)
+        Note over CI: CD Stage
+        CI->>SRV: SSH + docker compose pull
+        SRV->>REG: Pull new images
+        SRV->>SRV: docker compose up -d
+        SRV->>SRV: Health check (curl /health)
+    end
+
+    SRV->>NGX: Containers ready on ports
+    NGX->>NGX: Reverse proxy + SSL
+
+    rect rgb(232, 245, 233)
+        Note over MON: Post-Deploy Verify
+        SRV->>MON: Prometheus scrape /metrics
+        SRV->>MON: Filebeat collect logs
+        MON->>MON: Check error rate spike
+        MON-->>DEV: Alert if deploy broken
+    end
+```
+
+### 13.4 Nginx Reverse Proxy
+
+> ![Nginx Architecture](diagrams/10-nginx-architecture.png)
+>
+> Sơ đồ: [diagrams/10-nginx-architecture.mmd](diagrams/10-nginx-architecture.mmd)
+
+```mermaid
+flowchart LR
+    USER["Users\n(Internet)"] -->|"HTTPS :443"| NGX["Nginx\nReverse Proxy\nSSL Termination"]
+
+    NGX -->|"/api/*\nport 8080"| BE["Backend\n(Go Services)"]
+    NGX -->|"/*\nport 3000"| FE["Frontend\n(Next.js)"]
+    NGX -->|"/grafana/*\nport 3001"| GF["Grafana\nDashboards"]
+
+    BE -->|":9090"| PROM["Prometheus\nScrape"]
+    BE -->|"stdout"| FB["Filebeat\nLog Collect"]
+
+    subgraph Docker["Docker Compose Network"]
+        BE
+        FE
+        GF
+        PROM
+        FB
+    end
+
+    style USER fill:#ffcdd2,stroke:#c62828
+    style NGX fill:#f3e5f5,stroke:#6a1b9a
+    style Docker fill:#e8f5e9,stroke:#2e7d32
+```
+
+**Nginx config mẫu** (`/etc/nginx/sites-available/logmon`):
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name logmon.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/logmon.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/logmon.example.com/privkey.pem;
+
+    # Frontend (Next.js)
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Backend API
+    location /api/ {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Grafana (internal dashboards)
+    location /grafana/ {
+        proxy_pass http://localhost:3001/;
+        proxy_set_header Host $host;
+    }
+}
+
+# HTTP → HTTPS redirect
+server {
+    listen 80;
+    server_name logmon.example.com;
+    return 301 https://$server_name$request_uri;
+}
+```
+
+### 13.5 Dockerfile
+
+**Backend** (`backend/Dockerfile`):
+
+```dockerfile
+# Build stage
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/service ./cmd/orderservice/
+
+# Runtime stage
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates
+COPY --from=builder /bin/service /bin/service
+EXPOSE 8080 9090
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+    CMD wget -qO- http://localhost:8080/health || exit 1
+ENTRYPOINT ["/bin/service"]
+```
+
+**Frontend** (`frontend/Dockerfile`):
+
+```dockerfile
+# Build stage
+FROM node:20-alpine AS builder
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+# Runtime stage
+FROM node:20-alpine
+WORKDIR /app
+RUN corepack enable
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+    CMD wget -qO- http://localhost:3000/ || exit 1
+CMD ["node", "server.js"]
+```
+
+### 13.6 CI/CD Pipeline (GitHub Actions)
+
+```yaml
+# .github/workflows/deploy.yml
+name: Build & Deploy LogMon
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ── CI: Test & Build ──────────────────────────
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: cd backend && go test ./...
+      - run: cd backend && go vet ./...
+      - run: cd backend && golangci-lint run
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: cd frontend && pnpm install --frozen-lockfile
+      - run: cd frontend && pnpm test
+      - run: cd frontend && pnpm build
+
+  build-and-push:
+    needs: [test-backend, test-frontend]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-backend:${{ github.sha }},${{ env.IMAGE_PREFIX }}-backend:latest
+
+      - name: Build & push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}-frontend:${{ github.sha }},${{ env.IMAGE_PREFIX }}-frontend:latest
+
+  # ── CD: Deploy ────────────────────────────────
+  deploy-staging:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy to staging server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd /opt/logmon
+            docker compose pull
+            docker compose up -d
+            sleep 10
+            curl -f http://localhost:8080/health || exit 1
+            echo "Deploy OK"
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production  # requires manual approval
+    steps:
+      - name: Deploy to production server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            cd /opt/logmon
+            docker compose pull
+            docker compose --profile scale up -d
+            sleep 15
+            curl -f http://localhost:8080/health || exit 1
+            curl -f http://localhost:9090/api/v1/targets | grep -q '"health":"up"' || exit 1
+            echo "Production deploy OK"
+```
+
+### 13.7 Hướng Dẫn Deploy Từng Bước
+
+#### Bước 1: Chuẩn Bị Server (Ubuntu 22.04)
+
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+
+# Install Docker Compose plugin
+sudo apt install docker-compose-plugin -y
+
+# Install Nginx
+sudo apt install nginx -y
+
+# Install Certbot (SSL)
+sudo apt install certbot python3-certbot-nginx -y
+```
+
+#### Bước 2: Clone & Cấu Hình
+
+```bash
+# Clone project
+git clone <repo-url> /opt/logmon
+cd /opt/logmon
+
+# Tạo file environment
+cp .env.example .env
+# Sửa .env với các giá trị thực tế:
+#   POSTGRES_PASSWORD=<strong-password>
+#   ELASTIC_PASSWORD=<strong-password>
+#   GRAFANA_ADMIN_PASSWORD=<strong-password>
+```
+
+#### Bước 3: Deploy Mode A (Dev/Staging — Không Kafka)
+
+```bash
+cd /opt/logmon/infra/docker
+
+# Start toàn bộ stack (Mode A: Filebeat → Logstash → ES)
+docker compose up -d
+
+# Kiểm tra tất cả services đã healthy
+docker compose ps
+
+# Kiểm tra endpoints
+curl http://localhost:8080/health          # Backend
+curl http://localhost:3000                 # Frontend
+curl http://localhost:9090/api/v1/targets  # Prometheus targets
+curl http://localhost:9200/_cluster/health # Elasticsearch
+curl http://localhost:3001                 # Grafana
+```
+
+#### Bước 4: Deploy Mode B (Production — Với Kafka)
+
+```bash
+cd /opt/logmon/infra/docker
+
+# Start full stack với Kafka buffer
+docker compose --profile scale up -d
+
+# Kiểm tra Kafka
+docker compose exec kafka kafka-topics --list --bootstrap-server localhost:9092
+
+# Kiểm tra consumer lag
+docker compose exec kafka kafka-consumer-groups \
+    --describe --group logstash-consumer \
+    --bootstrap-server localhost:9092
+```
+
+#### Bước 5: Cấu Hình Nginx & SSL
+
+```bash
+# Copy nginx config
+sudo cp /opt/logmon/infra/nginx/logmon.conf /etc/nginx/sites-available/logmon
+sudo ln -s /etc/nginx/sites-available/logmon /etc/nginx/sites-enabled/
+
+# Test & reload
+sudo nginx -t
+sudo systemctl reload nginx
+
+# Cài SSL (Let's Encrypt)
+sudo certbot --nginx -d logmon.example.com
+```
+
+#### Bước 6: Verify Post-Deploy
+
+```bash
+# 1. Health check
+curl -f https://logmon.example.com/api/health
+
+# 2. Prometheus targets all UP
+curl -s http://localhost:9090/api/v1/targets | \
+    jq '.data.activeTargets[] | {job: .labels.job, health: .health}'
+
+# 3. Logs flowing vào Elasticsearch
+curl -s 'http://localhost:9200/logs-*/_count' | jq '.count'
+
+# 4. Grafana dashboards loaded
+curl -s http://localhost:3001/api/dashboards | jq '.[].title'
+
+# 5. Alertmanager reachable
+curl -s http://localhost:9093/api/v2/status | jq '.cluster.status'
+```
+
+### 13.8 Rollback
+
+Khi deploy lỗi, rollback nhanh bằng cách quay về image trước:
+
+```bash
+cd /opt/logmon/infra/docker
+
+# Xem image version hiện tại
+docker compose images
+
+# Rollback về version cụ thể
+export BACKEND_TAG=v1.1   # version trước
+export FRONTEND_TAG=v1.1
+docker compose pull
+docker compose up -d
+
+# Verify
+curl -f http://localhost:8080/health
+```
+
+### 13.9 Lộ Trình DevOps cho LogMon
+
+| Giai đoạn | Mục tiêu | Công cụ |
+|-----------|----------|---------|
+| **Phase 1: MVP** | 1 VPS, Docker Compose, deploy thủ công | Ubuntu + Docker + Nginx |
+| **Phase 2: CI/CD** | Tự động test & deploy khi push code | GitHub Actions + SSH deploy |
+| **Phase 3: Multi-env** | Staging + Production tách biệt | Docker Compose profiles + GitHub Environments |
+| **Phase 4: Scale** | Auto-scaling, high availability | Kubernetes (managed: EKS/AKS/GKE) |
+
+**Nguyên tắc**: Bắt đầu đơn giản nhất có thể. Chỉ thêm complexity khi nhu cầu thực sự phát sinh:
+
+```
+Phase 1 (đủ cho 90% startup):
+  Ubuntu VPS + Docker Compose + Nginx + Let's Encrypt
+
+Phase 2 (khi team > 3 người):
+  + GitHub Actions CI/CD pipeline
+
+Phase 3 (khi có staging/prod riêng):
+  + Docker Compose profiles + GitHub Environments
+
+Phase 4 (khi cần auto-scale, HA):
+  + Kubernetes + Cloud managed services
+```
