@@ -1,93 +1,317 @@
-# LogMon AI Agent Team — Agile/Scrum Multi-Agent System
+# LogMon AI Agent Team — Story-Driven Multi-Agent System
 
 > **Dự án:** LogMon — Logging & Monitoring Platform
-> **Inspired by:** [get-shit-done](https://github.com/gsd-build/get-shit-done) (GSD)
-> **Ngày thiết kế:** 2026-03-18
+> **Inspired by:** [get-shit-done](https://github.com/gsd-build/get-shit-done), Luồng làm việc chuẩn BA/Dev/QC
+> **Ngày cập nhật:** 2026-03-18
 > **Status:** DRAFT — Chờ Boss NamDam confirm
 
 ---
 
 ## 1. Tổng Quan
 
-### 1.1 Vấn Đề
+### 1.1 Triết Lý
 
-Một developer dùng Claude Code cho dự án lớn gặp 3 vấn đề:
+**Story là đơn vị trung tâm**, không phải Sprint. Mỗi story là một feature/sub-feature có:
+- `story.md` do BA viết — **single source of truth**
+- `tech/tech-spec.md` do Dev sinh ra từ story — bản cam kết kỹ thuật với BA
+- `test/test-cases.md` do QC sinh ra từ story — **song song** với Dev, không cần chờ code
+- `security/review.md` do DevSecOps sinh ra từ story + tech-spec
 
-| Vấn đề | Triệu chứng | Hậu quả |
-|--------|-------------|---------|
-| **Context rot** | AI "quên" architecture rules sau ~50K tokens | Code vi phạm DDD boundaries, chất lượng giảm dần |
-| **Single-role bottleneck** | 1 AI làm tất cả: requirements, code, test, deploy | Thiếu kiểm tra chéo, bugs lọt qua |
-| **No structure** | Mỗi session bắt đầu lại từ đầu | Không có tiến độ tích lũy giữa các sessions |
-
-### 1.2 Giải Pháp
-
-5 AI Agents chuyên biệt, giao tiếp qua **file-based bus** (`.agile/`), làm việc theo **Scrum sprints**:
+**5 role, mỗi role là một con người thật hoặc AI Agent** — có thể mix:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    SCRUM MASTER (User)                    │
-│              Điều phối qua slash commands                 │
-└───────────┬──────────┬──────────┬──────────┬────────────┘
-            │          │          │          │
-    ┌───────▼──┐ ┌─────▼────┐ ┌──▼─────┐ ┌─▼────────┐ ┌──────────┐
-    │    BA    │ │  DEV-BE  │ │ DEV-FE │ │    QA    │ │ DevSecOps│
-    │ Analyst  │ │ Backend  │ │Frontend│ │ Testing  │ │ Infra+Sec│
-    └────┬─────┘ └────┬─────┘ └───┬────┘ └────┬─────┘ └────┬─────┘
-         │            │           │            │             │
-         └────────────┴───────────┴────────────┴─────────────┘
-                              │
-                    ┌─────────▼─────────┐
-                    │   .agile/         │
-                    │   File-Based Bus  │
-                    │   (Communication) │
-                    └───────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                     stories/ (Source of Truth)                 │
+│                                                               │
+│  stories/alerting/create-rule/                                │
+│    ├── story.md          ← BA viết                            │
+│    ├── tech/tech-spec.md ← Dev sinh từ story                  │
+│    ├── tech/scaffold/    ← Dev sinh code scaffold              │
+│    ├── test/test-cases.md← QC sinh từ story (SONG SONG Dev)   │
+│    ├── test/scripts/     ← QC sinh automation scripts          │
+│    └── security/review.md← DevSecOps audit                    │
+└──────────────────────────────────────────────────────────────┘
+         ▲          ▲           ▲           ▲
+         │          │           │           │
+    ┌────┴───┐ ┌────┴───┐ ┌────┴───┐ ┌─────┴─────┐
+    │   BA   │ │DEV-BE  │ │   QC   │ │ DevSecOps │
+    │        │ │DEV-FE  │ │        │ │           │
+    │ /ba:*  │ │ /dev:* │ │ /qc:*  │ │ /sec:*    │
+    └────────┘ └────────┘ └────────┘ └───────────┘
+     Human      Human       Human       Human
+     + AI       + AI        + AI        + AI
 ```
 
-### 1.3 Nguyên Tắc Thiết Kế (từ GSD)
+### 1.2 Nguyên Tắc
 
-| Nguyên tắc | Mô tả |
-|------------|-------|
-| **File-based communication** | Agents KHÔNG giao tiếp trực tiếp. Tất cả qua files trong `.agile/` |
-| **Fresh context per agent** | Mỗi agent spawn với fresh context window, tự đọc files cần thiết |
-| **Thin orchestrator** | User (Scrum Master) chỉ chạy commands, agents tự coordinate qua files |
-| **Principle of least privilege** | Mỗi agent chỉ có tools cần thiết cho role của mình |
-| **Defense in depth** | Nhiều layers kiểm tra: BA validates requirements, QA validates code, DevSecOps validates security |
+| # | Nguyên tắc | Mô tả |
+|---|-----------|-------|
+| 1 | **Story = Source of Truth** | Mọi artifacts (tech-spec, test-cases, security) sinh ra từ story.md |
+| 2 | **QC song song với Dev** | QC gen test cases từ story, KHÔNG cần chờ code xong |
+| 3 | **Versioned stories** | Story có version (v1.0.0 → v1.1.0). Update → auto-diff → sync impact |
+| 4 | **Draft → Release** | BA draft ở `ba/`, review xong mới release sang `stories/` |
+| 5 | **Tech Spec trước Code** | Dev gen tech-spec TRƯỚC khi code — cam kết kỹ thuật với BA |
+| 6 | **Sync on change** | Story thay đổi → Dev sync tech-spec, QC sync test-cases |
+| 7 | **Multi-user capable** | Mỗi role có thể là người thật + AI agent riêng trên cùng repo |
 
 ---
 
-## 2. Năm AI Agents
+## 2. Luồng Làm Việc Chuẩn
 
-### 2.1 BA (Business Analyst)
+### Giai Đoạn 1 — BA viết và release story
 
-**Nhiệm vụ:** Phân tích requirements, viết user stories, định nghĩa acceptance criteria, maintain product backlog.
+```bash
+# Tạo story mới (feature / sub-feature)
+/ba:new-story alerting
+/ba:new-story alerting/create-rule
 
-| Thuộc tính | Giá trị |
-|-----------|---------|
-| **Model** | Opus (cần reasoning sâu cho domain analysis) |
-| **Tools** | Read, Write, Glob, Grep, WebSearch, WebFetch |
-| **KHÔNG có** | Edit, Bash (không sửa code, không chạy commands) |
-| **Đọc** | `doc/logmon.md`, `.agile/PRODUCT-BACKLOG.md`, `.agile/STATE.md` |
-| **Viết** | `.agile/PRODUCT-BACKLOG.md`, `.agile/sprints/{N}/stories/*.md`, `.agile/sprints/{N}/SPRINT-BACKLOG.md` |
+# Review trước khi release (AI check gaps, ambiguity)
+/ba:review alerting/create-rule
 
-**Quy tắc:**
-- Mọi user story PHẢI có format: `As a [persona], I want [goal], so that [benefit]`
-- Mọi story PHẢI có Acceptance Criteria dạng Given/When/Then
-- Stories PHẢI map tới Bounded Context (alerting, slo, logpipeline, order, user)
-- PHẢI gắn REQ-ID traceable (REQ-ALT-001, REQ-SLO-001, ...)
-- PHẢI estimate Story Points (1, 2, 3, 5, 8, 13) dựa trên complexity
-- KHÔNG viết technical implementation details — chỉ business requirements
+# Release draft → stories/ (đây mới là bản Dev & QC dùng)
+/ba:release alerting/create-rule v1.0.0
+```
 
-**Output format (User Story):**
+**Kết quả:** `stories/alerting/create-rule/story.md` — source of truth cho Dev và QC.
+
+**BA draft directory:** `ba/alerting/create-rule/story.md` (workspace riêng, chưa publish)
+
+### Giai Đoạn 2 — Dev generate từ story
+
+```bash
+# Story → Tech Spec (CHẠY TRƯỚC khi code)
+/dev:gen-tech-spec alerting/create-rule
+
+# Tech Spec → Code Scaffold
+/dev:gen-scaffold alerting/create-rule
+
+# Implement code (Dev tự code hoặc AI assist)
+# ...
+
+# Check implementation vs AC trong story
+/dev:review alerting/create-rule
+```
+
+**Output:** `stories/alerting/create-rule/tech/tech-spec.md`
+
+> **Quy tắc:** Chạy `/dev:gen-tech-spec` **trước** khi code. Tech spec là bản cam kết với BA — nếu AI generate sai hướng, điều chỉnh agent config trước khi viết code.
+
+### Giai Đoạn 3 — QC generate từ story (SONG SONG với Giai Đoạn 2)
+
+```bash
+# Story → Test Cases + Coverage Matrix
+/qc:gen-test-cases alerting/create-rule
+
+# Test Cases → Automation Scripts
+/qc:gen-scripts alerting/create-rule
+
+# Viết bug report có cấu trúc theo Test Case ID
+/qc:bug-report alerting/create-rule TC-003
+```
+
+**Output:** `stories/alerting/create-rule/test/test-cases.md`
+
+> **Quy tắc:** QC chạy `/qc:gen-test-cases` **song song** với Dev — không cần chờ code xong mới viết test.
+
+### Giai Đoạn 4 — DevSecOps review (SONG SONG với Giai Đoạn 2-3)
+
+```bash
+# Story + Tech Spec → Security Review
+/sec:review alerting/create-rule
+
+# Infra requirements từ story
+/sec:gen-infra alerting/create-rule
+
+# Audit code sau khi Dev implement xong
+/sec:audit alerting/create-rule
+```
+
+**Output:** `stories/alerting/create-rule/security/review.md`
+
+### Giai Đoạn 5 — BA update story (vòng lặp)
+
+```bash
+# BA chỉnh sửa ba/alerting/create-rule/story.md
+# Sau đó release version mới:
+/ba:release alerting/create-rule v1.1.0
+# → Auto-diff vs v1.0.0, tóm tắt thay đổi, ước lượng impact lên Dev & QC
+```
+
+```bash
+# Dev nhận thông báo, chạy:
+/dev:sync alerting/create-rule
+# → AI chỉ đúng phần tech-spec nào cần update
+
+# QC nhận thông báo, chạy:
+/qc:sync alerting/create-rule
+# → AI chỉ test case nào bị invalid
+
+# DevSecOps nhận thông báo, chạy:
+/sec:sync alerting/create-rule
+# → AI chỉ security review nào cần update
+```
+
+### Timeline Song Song
+
+```
+Thời gian ──────────────────────────────────────────────────▶
+
+BA:       ██ new-story ██ review ██ release v1.0 ·········· ██ update ██ release v1.1
+                                       │                          │
+Dev-BE:                                ├── gen-tech-spec ── code ── review ·· sync ── fix
+Dev-FE:                                ├── gen-tech-spec ── code ── review ·· sync ── fix
+QC:                                    ├── gen-test-cases ── gen-scripts ··· sync ── update
+DevSecOps:                             └── review ── gen-infra ············ sync ── audit
+                                       │
+                                  Song song từ đây
+```
+
+---
+
+## 3. Story Directory Structure
+
+### 3.1 Stories (Published — Source of Truth)
+
+```
+stories/
+├── alerting/                                ← Bounded Context
+│   ├── create-rule/                         ← Feature
+│   │   ├── story.md                         ← BA output (versioned)
+│   │   ├── tech/
+│   │   │   ├── tech-spec.md                 ← Dev-BE tech spec
+│   │   │   ├── tech-spec-fe.md              ← Dev-FE tech spec (nếu có UI)
+│   │   │   └── scaffold/                    ← Generated code scaffold
+│   │   ├── test/
+│   │   │   ├── test-cases.md                ← QC test cases + coverage matrix
+│   │   │   ├── scripts/                     ← QC automation scripts
+│   │   │   └── bugs/                        ← QC bug reports (BUG-001.md, ...)
+│   │   └── security/
+│   │       ├── review.md                    ← DevSecOps security review
+│   │       └── infra.md                     ← DevSecOps infra requirements
+│   │
+│   ├── evaluate-rule/                       ← Another feature
+│   │   └── ...
+│   ├── silence-alert/
+│   │   └── ...
+│   └── notify-slack/
+│       └── ...
+│
+├── slo/
+│   ├── define-slo/
+│   ├── error-budget/
+│   └── burn-rate-alert/
+│
+├── logpipeline/
+│   ├── switch-mode/
+│   ├── retry-dlq/
+│   └── manage-ilm/
+│
+├── order/
+│   ├── create-order/
+│   └── cancel-order/
+│
+└── user/
+    ├── register/
+    └── login/
+```
+
+### 3.2 BA Draft Space
+
+```
+ba/                                          ← BA workspace (chưa publish)
+├── alerting/
+│   └── create-rule/
+│       └── story.md                         ← Draft, đang soạn
+└── ...
+```
+
+### 3.3 Versions (tự động khi release)
+
+```
+.versions/                                   ← Auto-generated khi /ba:release
+├── alerting/
+│   └── create-rule/
+│       ├── v1.0.0/story.md                  ← Snapshot v1.0.0
+│       └── v1.1.0/story.md                  ← Snapshot v1.1.0
+└── ...
+```
+
+---
+
+## 4. Slash Commands
+
+### 4.1 BA Commands
+
+| Command | Mô tả | Input | Output |
+|---------|-------|-------|--------|
+| `/ba:new-story <path>` | Tạo story mới từ template | BC + feature name | `ba/{path}/story.md` |
+| `/ba:review <path>` | AI review gaps, ambiguity, missing AC | `ba/{path}/story.md` | Feedback inline hoặc suggestions |
+| `/ba:release <path> <version>` | Promote draft → `stories/`, auto-diff nếu update | `ba/{path}/story.md` | `stories/{path}/story.md` + version snapshot |
+| `/ba:impact <path>` | Ước lượng impact thay đổi lên Dev & QC | Diff giữa versions | Impact report |
+
+### 4.2 Dev-BE Commands
+
+| Command | Mô tả | Input | Output |
+|---------|-------|-------|--------|
+| `/dev:gen-tech-spec <path>` | Đọc story → sinh tech-spec.md | `stories/{path}/story.md` | `stories/{path}/tech/tech-spec.md` |
+| `/dev:gen-scaffold <path>` | Đọc tech-spec → sinh code scaffold | `tech-spec.md` | `backend/internal/{bc}/**/*.go` |
+| `/dev:review <path>` | Kiểm tra implementation vs AC trong story | story.md + source code | Pass/Fail report |
+| `/dev:sync <path>` | Xem phần tech-spec nào cần update sau khi story thay đổi | story.md diff | Tech-spec update plan |
+
+### 4.3 Dev-FE Commands
+
+| Command | Mô tả | Input | Output |
+|---------|-------|-------|--------|
+| `/dev-fe:gen-tech-spec <path>` | Đọc story → sinh tech-spec-fe.md | `stories/{path}/story.md` | `stories/{path}/tech/tech-spec-fe.md` |
+| `/dev-fe:gen-scaffold <path>` | Đọc tech-spec → sinh UI scaffold | `tech-spec-fe.md` | `frontend/**/*.tsx` |
+| `/dev-fe:review <path>` | Kiểm tra UI vs AC | story.md + source code | Pass/Fail report |
+| `/dev-fe:sync <path>` | Detect changes needed after story update | story.md diff | UI update plan |
+
+### 4.4 QC Commands
+
+| Command | Mô tả | Input | Output |
+|---------|-------|-------|--------|
+| `/qc:gen-test-cases <path>` | Đọc story → sinh test-cases.md + coverage matrix | `stories/{path}/story.md` | `stories/{path}/test/test-cases.md` |
+| `/qc:gen-scripts <path>` | Đọc test cases → sinh automation scripts | `test-cases.md` | `stories/{path}/test/scripts/*.go` hoặc `*.ts` |
+| `/qc:bug-report <path> <TC-id>` | Tạo bug report có cấu trúc theo TC | Test case + evidence | `stories/{path}/test/bugs/BUG-{N}.md` |
+| `/qc:sync <path>` | Xem test case nào invalid sau khi story thay đổi | story.md diff | Invalid test case list |
+
+### 4.5 DevSecOps Commands
+
+| Command | Mô tả | Input | Output |
+|---------|-------|-------|--------|
+| `/sec:review <path>` | Security review từ story + tech-spec | story.md + tech-spec.md | `stories/{path}/security/review.md` |
+| `/sec:gen-infra <path>` | Sinh infra requirements từ story | story.md | `stories/{path}/security/infra.md` |
+| `/sec:audit <path>` | Audit source code (OWASP checklist) | Source code | Security audit report |
+| `/sec:sync <path>` | Detect security review nào cần update | story.md diff | Security update plan |
+
+### 4.6 Sprint Commands (Orchestration)
+
+| Command | Mô tả | Khi nào dùng |
+|---------|-------|-------------|
+| `/sprint:init <N>` | Tạo sprint mới, chọn stories từ backlog | Đầu sprint |
+| `/sprint:status` | Xem progress tất cả stories trong sprint | Bất kỳ lúc nào |
+| `/sprint:review` | Tổng hợp kết quả từ tất cả stories | Cuối sprint |
+| `/sprint:retro` | Retrospective — lessons learned | Cuối sprint |
+
+---
+
+## 5. Story Format
+
+### 5.1 story.md (BA Output)
+
 ```markdown
 ---
 id: US-ALT-001
 title: Tạo Alert Rule mới
 bounded_context: alerting
+version: 1.0.0
 priority: high
 story_points: 5
-requirements: [REQ-ALT-001, REQ-ALT-002]
 sprint: 1
-status: ready
+status: released
+created: 2026-03-18
+updated: 2026-03-18
 ---
 
 ## User Story
@@ -95,694 +319,520 @@ As a **SRE**, I want to **create a new alert rule with PromQL expression**,
 so that **I get notified when a service exceeds error threshold**.
 
 ## Acceptance Criteria
-- [ ] **AC1:** Given valid PromQL expression, When SRE submits rule, Then rule is saved and evaluation starts within 15s
-- [ ] **AC2:** Given invalid PromQL expression, When SRE submits rule, Then validation error is returned with specific reason
-- [ ] **AC3:** Given rule with severity=critical, When alert fires, Then Slack notification is sent within 5 minutes
-- [ ] **AC4:** Given duplicate rule name, When SRE submits, Then conflict error is returned
 
-## Notes
-- PromQL validation nên check syntax trước khi save
-- Cần support 3 severity levels: critical, warning, info
+### AC1: Tạo rule thành công
+- **Given** valid PromQL expression và severity level
+- **When** SRE submit form tạo alert rule
+- **Then** rule được lưu vào database và evaluation bắt đầu trong 15s
+
+### AC2: Validate PromQL
+- **Given** invalid PromQL expression (syntax error)
+- **When** SRE submit form
+- **Then** trả về validation error với lý do cụ thể
+
+### AC3: Notify khi alert fires
+- **Given** rule severity = critical
+- **When** alert fires (metric vượt threshold liên tục >= for duration)
+- **Then** Slack notification gửi trong vòng 5 phút
+
+### AC4: Duplicate name
+- **Given** rule name đã tồn tại
+- **When** SRE submit form
+- **Then** trả về conflict error
+
+## Business Rules
+- PromQL phải validate syntax trước khi save
+- Support 3 severity levels: critical, warning, info
+- Mỗi rule phải có: name, expression, severity, for_duration
+- Rule name unique trong cùng service
+
+## UI Requirements (nếu có)
+- Form tạo alert rule với fields: name, expression, severity, for_duration, service
+- PromQL syntax highlighting (nice-to-have)
+- Preview: dry-run evaluation trước khi save
+
+## Out of Scope
+- Alert evaluation engine (story riêng: alerting/evaluate-rule)
+- Notification channels setup (story riêng: alerting/notify-slack)
+```
+
+### 5.2 tech-spec.md (Dev Output)
+
+```markdown
+---
+story: US-ALT-001
+story_version: 1.0.0
+author: DEV-BE
+created: 2026-03-18
+---
+
+## Architecture Decision
+- Bounded Context: alerting (Clean Architecture + DDD + CQRS)
+- AlertRule = Aggregate Root
+- CreateRule = Command (write side)
+
+## Implementation Plan
+
+### Layer: domain/
+| File | Purpose |
+|------|---------|
+| `alert_rule.go` | Aggregate Root: NewAlertRule() constructor with validation |
+| `severity.go` | Value Object: Critical/Warning/Info enum |
+| `errors.go` | ErrRuleInvalid, ErrRuleNameExists |
+
+### Layer: app/command/
+| File | Purpose |
+|------|---------|
+| `create_rule.go` | CreateRuleHandler: validate + save + emit event |
+
+### Layer: ports/
+| File | Purpose |
+|------|---------|
+| `repository.go` | AlertRuleRepository interface (Save, FindByName) |
+
+### Layer: adapters/
+| File | Purpose |
+|------|---------|
+| `postgres/repo.go` | PostgreSQL implementation |
+| `http/handler.go` | POST /api/v1/alert-rules |
+
+## API Contract
+```
+POST /api/v1/alert-rules
+Content-Type: application/json
+
+{
+  "name": "high-error-rate",
+  "expression": "rate(logmon_http_requests_total{status=~\"5..\"}[5m]) > 0.05",
+  "severity": "critical",
+  "for_duration": "2m",
+  "service": "order-service"
+}
+
+→ 201 Created: { "id": "uuid", "name": "...", "status": "active" }
+→ 400 Bad Request: { "error": "invalid PromQL expression: ..." }
+→ 409 Conflict: { "error": "rule name already exists" }
+```
+
+## AC Mapping
+| AC | Implementation |
+|----|---------------|
+| AC1 | CreateRuleHandler.Handle() → repo.Save() |
+| AC2 | domain.NewAlertRule() validates PromQL syntax |
+| AC3 | Out of scope (alerting/notify-slack story) |
+| AC4 | repo.FindByName() check before save |
+```
+
+### 5.3 test-cases.md (QC Output)
+
+```markdown
+---
+story: US-ALT-001
+story_version: 1.0.0
+author: QC
+created: 2026-03-18
+total_cases: 8
+---
+
+## Coverage Matrix
+
+| AC | Test Cases | Coverage |
+|----|-----------|----------|
+| AC1 | TC-001, TC-002 | Full |
+| AC2 | TC-003, TC-004, TC-005 | Full |
+| AC3 | TC-006 | Deferred (depends on alerting/notify-slack) |
+| AC4 | TC-007, TC-008 | Full |
+
+## Test Cases
+
+### TC-001: Create rule with valid data
+- **Type:** Happy path
+- **Precondition:** Database empty
+- **Input:** name="high-error-rate", expression="rate(...) > 0.05", severity="critical", for="2m"
+- **Expected:** 201 Created, rule appears in GET /api/v1/alert-rules
+- **Priority:** Critical
+
+### TC-002: Create rule — evaluation starts within 15s
+- **Type:** Timing
+- **Precondition:** Rule created successfully
+- **Input:** Metric matching expression pushed to Prometheus
+- **Expected:** Alert status changes to "firing" within 15s
+- **Priority:** High
+
+### TC-003: Invalid PromQL — syntax error
+- **Type:** Negative
+- **Input:** expression="rate(invalid{{"
+- **Expected:** 400, error message contains "syntax"
+- **Priority:** Critical
+
+### TC-004: Invalid PromQL — empty expression
+- **Type:** Boundary
+- **Input:** expression=""
+- **Expected:** 400, error message contains "required"
+- **Priority:** High
+
+### TC-005: Invalid severity value
+- **Type:** Negative
+- **Input:** severity="urgent" (not in enum)
+- **Expected:** 400, error message contains "oneof"
+- **Priority:** Medium
+
+### TC-006: Slack notification on critical alert
+- **Type:** Integration (DEFERRED)
+- **Depends on:** alerting/notify-slack story
+- **Priority:** Critical
+
+### TC-007: Duplicate rule name — exact match
+- **Type:** Negative
+- **Precondition:** Rule "high-error-rate" exists
+- **Input:** name="high-error-rate" (same)
+- **Expected:** 409 Conflict
+- **Priority:** High
+
+### TC-008: Duplicate rule name — case sensitivity
+- **Type:** Edge case
+- **Precondition:** Rule "High-Error-Rate" exists
+- **Input:** name="high-error-rate" (different case)
+- **Expected:** 409 Conflict (case-insensitive match)
+- **Priority:** Medium
 ```
 
 ---
 
-### 2.2 DEV-BE (Backend Developer)
+## 6. Năm AI Agents
 
-**Nhiệm vụ:** Implement Go backend theo Clean Architecture + DDD + CQRS. Viết code, unit tests, integration tests.
+### 6.1 BA (Business Analyst)
 
 | Thuộc tính | Giá trị |
 |-----------|---------|
-| **Model** | Sonnet (balanced speed/quality cho code generation) |
+| **Model** | Opus (reasoning sâu cho domain analysis) |
+| **Tools** | Read, Write, Glob, Grep, WebSearch, WebFetch |
+| **KHÔNG có** | Edit source code, Bash |
+| **Context** | `doc/logmon.md` Sections 1-6, `CLAUDE.md` overview, existing stories |
+
+**Trách nhiệm:**
+- Viết stories với AC (Given/When/Then)
+- Review stories trước release (gaps, ambiguity)
+- Versioning: release v1.0.0, v1.1.0, ...
+- Impact analysis khi update story
+
+### 6.2 DEV-BE (Backend Developer)
+
+| Thuộc tính | Giá trị |
+|-----------|---------|
+| **Model** | Sonnet (balanced cho code generation) |
 | **Tools** | Read, Write, Edit, Bash, Glob, Grep |
-| **KHÔNG có** | WebSearch, WebFetch (không research, chỉ implement) |
-| **Đọc** | User stories từ BA, `CLAUDE.md`, `doc/logmon.md` Section 8-9, `.agile/sprints/{N}/tasks/BE-*.md` |
-| **Viết** | `backend/internal/**/*.go`, `.agile/sprints/{N}/tasks/BE-*-DONE.md` |
+| **KHÔNG có** | WebSearch, WebFetch |
+| **Context** | `CLAUDE.md` full, `doc/logmon.md` Sections 7-9, story + tech-spec |
 
-**Quy tắc:**
-- PHẢI tuân thủ layer direction: `adapters → ports ← app → domain`
-- PHẢI verify interface compliance: `var _ ports.X = (*Adapter)(nil)`
-- PHẢI viết unit tests cho domain logic (table-driven, `require` not `assert`)
-- PHẢI viết integration tests cho adapters
-- Mỗi task = 1 atomic git commit với message format: `feat(alerting/BE-001): implement CreateRule command handler`
-- Error handling theo decision matrix (Section 9.2)
-- KHÔNG sửa frontend code
-- KHÔNG sửa infrastructure code
+**Trách nhiệm:**
+- Gen tech-spec từ story (architecture mapping to DDD layers)
+- Gen code scaffold theo Clean Architecture
+- Implement business logic
+- Unit tests + integration tests
+- Commit format: `feat({bc}/US-{id}): {description}`
 
-**Output format (Task Done):**
-```markdown
----
-task_id: BE-ALT-001
-story_id: US-ALT-001
-status: done
-files_created:
-  - backend/internal/alerting/domain/alert_rule.go
-  - backend/internal/alerting/domain/errors.go
-  - backend/internal/alerting/app/command/create_rule.go
-  - backend/internal/alerting/ports/repository.go
-files_modified: []
-tests_added:
-  - backend/internal/alerting/domain/alert_rule_test.go
-  - backend/internal/alerting/app/command/create_rule_test.go
-test_results: "ok  alerting/domain 0.003s | ok  alerting/app/command 0.012s"
-commits:
-  - "feat(alerting/BE-ALT-001): implement AlertRule aggregate and CreateRule command"
-deviations: []
----
+**DDD/CQRS-specific rules:**
+- Tech-spec PHẢI map AC → domain layer (aggregate, value object, event)
+- PHẢI specify: domain/ → ports/ → adapters/ file breakdown
+- CQRS: tách command (write) và query (read) trong tech-spec
+- Domain events PHẢI list nếu có cross-BC impact
 
-## Summary
-Implemented AlertRule aggregate root with CreateRule command handler.
-Domain validates PromQL expression format and severity enum.
-All 12 test cases pass (8 domain + 4 command handler).
-
-## Verification
-- `go test ./internal/alerting/...` — all pass
-- `go vet ./internal/alerting/...` — no issues
-- Interface compliance: `var _ ports.AlertRuleRepository = (*PostgresAlertRepo)(nil)` — verified
-```
-
----
-
-### 2.3 DEV-FE (Frontend Developer)
-
-**Nhiệm vụ:** Implement Next.js frontend. UI components, pages, API client, TypeScript types.
+### 6.3 DEV-FE (Frontend Developer)
 
 | Thuộc tính | Giá trị |
 |-----------|---------|
 | **Model** | Sonnet |
 | **Tools** | Read, Write, Edit, Bash, Glob, Grep |
 | **KHÔNG có** | WebSearch, WebFetch |
-| **Đọc** | User stories từ BA, UI specs, `.agile/sprints/{N}/tasks/FE-*.md` |
-| **Viết** | `frontend/**/*.{tsx,ts,css}`, `.agile/sprints/{N}/tasks/FE-*-DONE.md` |
+| **Context** | `CLAUDE.md`, story + tech-spec-fe, existing components |
 
-**Quy tắc:**
-- TypeScript strict mode, NO `any` types
-- Components dùng shadcn/ui + TailwindCSS
-- API client layer trong `services/` — KHÔNG gọi fetch trực tiếp từ components
-- Mỗi page PHẢI có loading state, error state, empty state
-- KHÔNG sửa backend code
-- KHÔNG sửa infrastructure code
-- Responsive design (mobile-first)
+**Trách nhiệm:**
+- Gen tech-spec-fe (component tree, pages, API client)
+- Gen UI scaffold (Next.js pages, shadcn/ui components)
+- Implement responsive UI
+- TypeScript strict, no `any`
 
----
-
-### 2.4 QA (Quality Assurance)
-
-**Nhiệm vụ:** Verify code quality, test coverage, acceptance criteria. Review output của DEV-BE và DEV-FE.
+### 6.4 QC (Quality Assurance)
 
 | Thuộc tính | Giá trị |
 |-----------|---------|
-| **Model** | Opus (cần reasoning sâu cho verification) |
-| **Tools** | Read, Bash, Glob, Grep |
-| **KHÔNG có** | Write, Edit (READ-ONLY — không sửa code, chỉ report) |
-| **Đọc** | User stories (AC), code từ DEV-BE/DEV-FE, test results, `*-DONE.md` files |
-| **Viết** | `.agile/sprints/{N}/reviews/QA-REPORT.md` (chỉ file duy nhất) |
+| **Model** | Opus (reasoning sâu cho test design) |
+| **Tools** | Read, Write, Bash, Glob, Grep |
+| **KHÔNG có** | Edit source code (chỉ viết test files + reports) |
+| **Context** | Story (AC), tech-spec, source code, `doc/logmon.md` Section 9 |
 
-**Quy tắc:**
-- Verify TỪNG Acceptance Criteria (pass/fail với evidence)
-- Chạy `go test ./...` và `pnpm test` — report kết quả
-- Kiểm tra DDD layer violations (domain import infrastructure?)
-- Kiểm tra error handling (có `_ = err` nào không?)
-- Kiểm tra test coverage (domain logic PHẢI có unit tests)
-- KHÔNG tự sửa code — chỉ report bugs với file:line reference
-- Nếu có issues: tạo BUG entries trong QA-REPORT.md
+**Trách nhiệm:**
+- Gen test cases từ story (SONG SONG với Dev, không chờ code)
+- Gen automation scripts (Go tests, E2E tests)
+- Bug reports có cấu trúc (theo TC-id)
+- Sync test cases khi story thay đổi
 
-**Output format (QA Report):**
-```markdown
----
-sprint: 1
-phase: review
-stories_verified: [US-ALT-001, US-ALT-002]
-verdict: PASS_WITH_ISSUES
-bugs_found: 2
-coverage_backend: 78%
-coverage_frontend: 65%
----
+**Test case rules:**
+- Mỗi AC phải có ≥ 1 test case
+- Coverage matrix: AC → Test Cases mapping
+- Test types: happy path, negative, boundary, edge case, integration
+- Bug report PHẢI có: TC-id, severity, steps to reproduce, expected vs actual, file:line
 
-## Acceptance Criteria Verification
-
-### US-ALT-001: Tạo Alert Rule mới
-| AC | Status | Evidence |
-|----|--------|----------|
-| AC1: Valid PromQL → saved | PASS | `go test -run TestCreateRule/valid_expression` — PASS |
-| AC2: Invalid PromQL → error | PASS | `go test -run TestCreateRule/invalid_expression` — PASS |
-| AC3: Critical → Slack | FAIL | SlackNotifier adapter chưa implement |
-| AC4: Duplicate name → error | PASS | `go test -run TestCreateRule/duplicate_name` — PASS |
-
-## Bugs Found
-
-### BUG-001: Missing SlackNotifier implementation
-- **Severity:** High
-- **File:** `backend/internal/alerting/adapters/slack/notifier.go` — file chưa tồn tại
-- **Story:** US-ALT-001 AC3
-- **Action Required:** DEV-BE implement SlackNotifier adapter
-
-### BUG-002: Missing error wrap context
-- **Severity:** Low
-- **File:** `backend/internal/alerting/app/command/create_rule.go:45`
-- **Issue:** `return err` không wrap context, vi phạm Section 9.2
-- **Expected:** `return fmt.Errorf("create rule: %w", err)`
-
-## DDD Layer Check
-- [ ] domain/ imports stdlib only: PASS
-- [ ] adapters/ implements ports/ interfaces: PASS
-- [ ] No cross-BC imports: PASS
-- [x] Interface compliance verified: PASS
-
-## Test Coverage
-- `alerting/domain`: 92% — GOOD
-- `alerting/app/command`: 85% — GOOD
-- `alerting/adapters`: 0% — NEEDS WORK (integration tests missing)
-```
-
----
-
-### 2.5 DevSecOps
-
-**Nhiệm vụ:** Infrastructure setup, Docker/K8s config, CI/CD pipeline, security audit, deployment.
+### 6.5 DevSecOps
 
 | Thuộc tính | Giá trị |
 |-----------|---------|
 | **Model** | Sonnet |
 | **Tools** | Read, Write, Edit, Bash, Glob, Grep |
 | **KHÔNG có** | WebSearch, WebFetch |
-| **Đọc** | `doc/logmon.md` Section 9.7 (Security), Section 13 (Deploy), infra configs |
-| **Viết** | `infra/**/*`, `.github/workflows/*`, `.agile/sprints/{N}/reviews/SECURITY-AUDIT.md` |
+| **Context** | `doc/logmon.md` Sections 9.7 + 13, story + tech-spec, infra configs |
 
-**Quy tắc:**
-- PHẢI audit security theo OWASP Go-SCP checklist (Section 9.7)
-- Docker images PHẢI có: healthcheck, non-root user, minimal base image
-- CI pipeline PHẢI chạy: `go test`, `golangci-lint`, `pnpm test`, `docker build`
-- KHÔNG sửa backend business logic code
-- KHÔNG sửa frontend component code
-- Secrets LUÔN qua environment variables
+**Trách nhiệm:**
+- Security review từ story + tech-spec (OWASP checklist)
+- Gen infra requirements (Docker, CI/CD needs per story)
+- Audit source code sau khi Dev implement
+- Sync security review khi story thay đổi
 
-**Security Audit Checklist:**
-```markdown
-## Security Audit — Sprint {N}
+---
 
-### Input Validation
-- [ ] Tất cả request structs có validator tags
-- [ ] Parameterized queries (không string concatenation)
+## 7. Multi-User Parallel Mode
 
-### Authentication
-- [ ] bcrypt cho password hashing
-- [ ] JWT với HttpOnly + Secure + SameSite cookies
-- [ ] Generic error messages (không lộ field nào sai)
+### 7.1 Cách Hoạt Động
 
-### HTTP Security
-- [ ] HSTS header trên mọi response
-- [ ] X-Content-Type-Options: nosniff
-- [ ] X-Frame-Options: DENY
-- [ ] TLS 1.2+ minimum
+Mỗi team member mở Claude Code terminal riêng, trên **cùng repo** (Git branching):
 
-### Secrets
-- [ ] Không hardcode credentials trong source
-- [ ] .env không commit vào git
-- [ ] crypto/rand cho token generation
+```
+Terminal 1 — BA (người thật):
+  $ claude
+  > /ba:new-story alerting/create-rule
+  > /ba:review alerting/create-rule
+  > /ba:release alerting/create-rule v1.0.0
+  > git add stories/ && git commit && git push
 
-### Infrastructure
-- [ ] Docker images non-root
-- [ ] Resource limits trên mọi container
-- [ ] Network isolation configured
+Terminal 2 — Dev-BE (người thật):
+  $ claude
+  > git pull  # lấy story mới từ BA
+  > /dev:gen-tech-spec alerting/create-rule
+  > /dev:gen-scaffold alerting/create-rule
+  > # ... code implementation ...
+  > /dev:review alerting/create-rule
+  > git add . && git commit && git push
+
+Terminal 3 — QC (người thật):        ← SONG SONG với Terminal 2
+  $ claude
+  > git pull  # lấy story mới từ BA
+  > /qc:gen-test-cases alerting/create-rule
+  > /qc:gen-scripts alerting/create-rule
+  > git add stories/alerting/create-rule/test/ && git commit && git push
+
+Terminal 4 — DevSecOps (người thật):  ← SONG SONG với Terminal 2-3
+  $ claude
+  > git pull
+  > /sec:review alerting/create-rule
+  > /sec:gen-infra alerting/create-rule
+  > git add . && git commit && git push
+```
+
+### 7.2 Git Branching Strategy
+
+```
+main
+ └── sprint-1
+      ├── feature/alerting-create-rule        ← Dev-BE works here
+      ├── feature/alerting-create-rule-fe     ← Dev-FE works here
+      ├── test/alerting-create-rule           ← QC works here
+      └── infra/alerting-create-rule          ← DevSecOps works here
+
+Merge order:
+1. stories/ (BA) → main (hoặc sprint branch)
+2. test/ (QC) + security/ (DevSecOps) → sprint branch
+3. backend/ + frontend/ (Dev) → sprint branch (PR with QC review)
+4. sprint branch → main (sprint review done)
+```
+
+### 7.3 Single-User Mode
+
+Một người điều khiển tất cả agents cũng hoạt động:
+
+```bash
+# Đội 1 người, chạy lần lượt
+/ba:new-story alerting/create-rule
+/ba:release alerting/create-rule v1.0.0
+/dev:gen-tech-spec alerting/create-rule      # rồi implement
+/qc:gen-test-cases alerting/create-rule      # rồi gen scripts
+/sec:review alerting/create-rule
+/dev:review alerting/create-rule             # self-check
 ```
 
 ---
 
-## 3. Scrum Workflow
-
-### 3.1 Sprint Lifecycle
+## 8. Sync Workflow (Khi Story Thay Đổi)
 
 ```
-Sprint Duration: 2 tuần (có thể adjust)
-Sprint Goal: Hoàn thành 1-2 Bounded Contexts hoặc 1 epic
-
-┌──────────────────────────────────────────────────────────────────┐
-│                        SPRINT LIFECYCLE                          │
-│                                                                  │
-│  ┌─────────┐   ┌──────────┐   ┌─────────┐   ┌────────┐        │
-│  │ BACKLOG │──▶│ PLANNING │──▶│ EXECUTE │──▶│ REVIEW │──┐     │
-│  │ REFINE  │   │          │   │         │   │        │  │     │
-│  └─────────┘   └──────────┘   └─────────┘   └────────┘  │     │
-│      BA            ALL         BE+FE+DSO      QA+DSO     │     │
-│                                                           │     │
-│                                              ┌────────┐   │     │
-│                                              │ RETRO  │◀──┘     │
-│                                              │        │         │
-│                                              └────────┘         │
-│                                                 ALL             │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### 3.2 Ceremonies (Slash Commands)
-
-| Command | Ceremony | Agents Involved | Output |
-|---------|----------|----------------|--------|
-| `/sprint:init` | Sprint Initialization | BA | `PRODUCT-BACKLOG.md`, Sprint directory |
-| `/sprint:refine` | Backlog Refinement | BA | Updated stories with AC, story points |
-| `/sprint:plan` | Sprint Planning | BA → DEV-BE, DEV-FE, DevSecOps | `SPRINT-BACKLOG.md`, task breakdown |
-| `/sprint:execute` | Sprint Execution | DEV-BE, DEV-FE, DevSecOps (parallel) | Code + `*-DONE.md` files |
-| `/sprint:review` | Sprint Review | QA, DevSecOps | `QA-REPORT.md`, `SECURITY-AUDIT.md` |
-| `/sprint:retro` | Sprint Retrospective | ALL (sequential) | `RETRO.md` |
-| `/sprint:status` | Daily Standup | — (reads STATE.md) | Progress report |
-
-### 3.3 Chi Tiết Từng Ceremony
-
-#### `/sprint:init` — Khởi Tạo Sprint Mới
-
-```
-User chạy: /sprint:init
-
-1. BA Agent spawn (Opus)
-   ├── Đọc: doc/logmon.md, CLAUDE.md, PRODUCT-BACKLOG.md, STATE.md
-   ├── Hỏi user: Sprint Goal là gì? Focus BC nào?
-   ├── Viết: .agile/sprints/sprint-{N}/ directory
-   ├── Viết: SPRINT-BACKLOG.md (draft)
-   └── Return: Sprint {N} initialized, {X} stories proposed
-```
-
-#### `/sprint:refine` — Backlog Refinement
-
-```
-User chạy: /sprint:refine
-
-1. BA Agent spawn (Opus)
-   ├── Đọc: PRODUCT-BACKLOG.md, current sprint stories
-   ├── Viết/update: stories/*.md với Acceptance Criteria
-   ├── Estimate story points
-   ├── Prioritize (MoSCoW: Must/Should/Could/Won't)
-   └── Return: {X} stories refined, total {Y} story points
-```
-
-#### `/sprint:plan` — Sprint Planning
-
-```
-User chạy: /sprint:plan
-
-1. BA Agent spawn (Opus) — Task Decomposition
-   ├── Đọc: SPRINT-BACKLOG.md, refined stories
-   ├── Viết: Task breakdown per agent role
-   │   ├── tasks/BE-{BC}-{NNN}.md (backend tasks)
-   │   ├── tasks/FE-{BC}-{NNN}.md (frontend tasks)
-   │   └── tasks/INFRA-{NNN}.md   (devops tasks)
-   ├── Assign waves (dependency analysis):
-   │   Wave 0: Infrastructure setup (DevSecOps)
-   │   Wave 1: Domain + Ports (DEV-BE) — no dependencies
-   │   Wave 2: Adapters + HTTP (DEV-BE) + API Client (DEV-FE) — depends Wave 1
-   │   Wave 3: UI Pages (DEV-FE) — depends Wave 2
-   │   Wave 4: Integration (QA verification)
-   └── Return: {X} tasks, {Y} waves, estimated {Z} story points
-
-2. User confirms plan (hoặc adjust)
-```
-
-#### `/sprint:execute` — Sprint Execution
-
-```
-User chạy: /sprint:execute
-
-Orchestrator đọc SPRINT-BACKLOG.md, xác định wave hiện tại:
-
-Wave 0 — Infrastructure (sequential):
-  └── DevSecOps Agent spawn
-      ├── Đọc: tasks/INFRA-*.md
-      ├── Setup: Docker Compose, Prometheus config, DB migrations
-      ├── Viết: tasks/INFRA-*-DONE.md
-      └── Git commit: "infra(sprint-1/INFRA-001): docker compose for alerting BC"
-
-Wave 1 — Domain + Ports (parallel):
-  ├── DEV-BE Agent #1 spawn (alerting domain)
-  │   ├── Đọc: tasks/BE-ALT-001.md, US-ALT-001.md, CLAUDE.md
-  │   ├── Code: domain/alert_rule.go, domain/errors.go, ports/repository.go
-  │   ├── Tests: domain/alert_rule_test.go
-  │   ├── Viết: tasks/BE-ALT-001-DONE.md
-  │   └── Git commit: "feat(alerting/BE-ALT-001): AlertRule aggregate root"
-  │
-  └── DEV-BE Agent #2 spawn (slo domain) [PARALLEL]
-      ├── Đọc: tasks/BE-SLO-001.md, US-SLO-001.md, CLAUDE.md
-      ├── Code: domain/slo.go, domain/error_budget.go, ports/repository.go
-      └── Git commit: "feat(slo/BE-SLO-001): SLO aggregate with ErrorBudget"
-
-Wave 2 — Adapters + API (parallel, after Wave 1):
-  ├── DEV-BE Agent spawn (adapters)
-  │   ├── VERIFY: Wave 1 commits exist (git log check)
-  │   ├── Code: adapters/postgres/repo.go, adapters/http/handler.go
-  │   └── Git commit: "feat(alerting/BE-ALT-002): PostgreSQL adapter + HTTP handler"
-  │
-  └── DEV-FE Agent spawn (API client) [PARALLEL]
-      ├── Code: services/alerting-api.ts, types/alert.ts
-      └── Git commit: "feat(frontend/FE-ALT-001): alerting API client"
-
-Wave 3 — UI Pages (after Wave 2):
-  └── DEV-FE Agent spawn
-      ├── VERIFY: API client exists
-      ├── Code: app/alerts/page.tsx, components/AlertRuleForm.tsx
-      └── Git commit: "feat(frontend/FE-ALT-002): alert management page"
-
-Sau mỗi wave: Orchestrator check tất cả *-DONE.md files trước khi bắt đầu wave tiếp theo.
-```
-
-#### `/sprint:review` — Sprint Review
-
-```
-User chạy: /sprint:review
-
-1. QA Agent spawn (Opus) — READ-ONLY
-   ├── Đọc: Tất cả *-DONE.md files, stories/*.md (AC), source code
-   ├── Chạy: go test ./..., pnpm test
-   ├── Verify: Từng Acceptance Criteria (pass/fail)
-   ├── Check: DDD layer violations, error handling, test coverage
-   ├── Viết: reviews/QA-REPORT.md
-   └── Return: PASS / PASS_WITH_ISSUES / FAIL
-
-2. DevSecOps Agent spawn — Security Audit
-   ├── Đọc: Source code, Docker configs, CI pipeline
-   ├── Chạy: golangci-lint, security-specific checks
-   ├── Check: OWASP checklist (Section 9.7)
-   ├── Viết: reviews/SECURITY-AUDIT.md
-   └── Return: PASS / ISSUES_FOUND
-
-3. Nếu FAIL hoặc ISSUES_FOUND:
-   ├── User review issues
-   ├── Spawn DEV-BE/DEV-FE để fix (targeted)
-   └── Re-run /sprint:review
-```
-
-#### `/sprint:retro` — Sprint Retrospective
-
-```
-User chạy: /sprint:retro
-
-Orchestrator tổng hợp từ tất cả agents (sequential, mỗi agent đọc sprint artifacts):
-
-1. BA Agent: "Requirements đủ rõ không? AC có bị thiếu không?"
-2. DEV-BE Agent: "Architecture decisions nào tốt? Technical debt nào?"
-3. DEV-FE Agent: "UI patterns nào hiệu quả? Component reuse?"
-4. QA Agent: "Bugs pattern nào lặp lại? Test gaps?"
-5. DevSecOps Agent: "Security issues? Infrastructure improvements?"
-
-Output: RETRO.md với format:
-  - What went well (keep doing)
-  - What didn't go well (stop doing)
-  - Action items for next sprint
-  - Velocity metrics (story points completed / planned)
+BA update story v1.0.0 → v1.1.0
+         │
+         ├──▶ /ba:release alerting/create-rule v1.1.0
+         │         │
+         │         ├── Auto-diff: so sánh v1.0.0 vs v1.1.0
+         │         ├── Change summary: "Added AC5, modified AC2 threshold"
+         │         └── Impact estimate: "Dev: 2 files affected, QC: 3 test cases affected"
+         │
+         ├──▶ Dev chạy /dev:sync alerting/create-rule
+         │         └── AI output: "tech-spec.md cần update:
+         │                          - Section 'API Contract': thêm field 'labels'
+         │                          - Section 'AC Mapping': thêm AC5 mapping"
+         │
+         ├──▶ QC chạy /qc:sync alerting/create-rule
+         │         └── AI output: "test-cases.md impact:
+         │                          - TC-002: INVALID (AC2 threshold changed)
+         │                          - NEW: cần test case cho AC5
+         │                          - TC-001, TC-003-008: unchanged"
+         │
+         └──▶ DevSecOps chạy /sec:sync alerting/create-rule
+                   └── AI output: "security/review.md:
+                                    - 'labels' field cần input validation review"
 ```
 
 ---
 
-## 4. File-Based Communication Bus
+## 9. Sprint Integration
 
-### 4.1 Cấu Trúc `.agile/`
+Sprints là cách **nhóm stories** để tracking tiến độ, không phải driver chính.
+
+### 9.1 Sprint Config
 
 ```
 .agile/
-├── PRODUCT-BACKLOG.md              ← BA maintains (all stories, prioritized)
-├── STATE.md                        ← Auto-updated (current sprint, wave, progress)
-├── config.json                     ← Settings (sprint length, max agents, etc.)
-│
 ├── sprints/
-│   ├── sprint-01/
-│   │   ├── SPRINT-BACKLOG.md       ← Stories selected cho sprint này
-│   │   ├── SPRINT-GOAL.md          ← Sprint goal + Definition of Done
-│   │   │
-│   │   ├── stories/                ← BA output
-│   │   │   ├── US-ALT-001.md
-│   │   │   ├── US-ALT-002.md
-│   │   │   └── US-SLO-001.md
-│   │   │
-│   │   ├── tasks/                  ← Task plans + results
-│   │   │   ├── BE-ALT-001.md       ← Task plan (input cho DEV-BE)
-│   │   │   ├── BE-ALT-001-DONE.md  ← Task result (output từ DEV-BE)
-│   │   │   ├── FE-ALT-001.md
-│   │   │   ├── FE-ALT-001-DONE.md
-│   │   │   ├── INFRA-001.md
-│   │   │   └── INFRA-001-DONE.md
-│   │   │
-│   │   ├── reviews/                ← QA + DevSecOps output
-│   │   │   ├── QA-REPORT.md
-│   │   │   └── SECURITY-AUDIT.md
-│   │   │
-│   │   └── RETRO.md                ← Sprint retrospective
-│   │
-│   └── sprint-02/
-│       └── ...
-│
-└── knowledge/                      ← Accumulated learnings
-    ├── architecture-decisions.md   ← ADRs made during sprints
-    ├── bug-patterns.md             ← QA: recurring bug patterns
-    └── security-findings.md        ← DevSecOps: security patterns
+│   ├── sprint-1.md                          ← Sprint metadata + story list
+│   ├── sprint-2.md
+│   └── ...
+├── backlog.md                               ← Unprioritized stories
+└── config.json                              ← Settings
 ```
 
-### 4.2 Communication Flow
-
-```
-BA viết story ──────────────────────────────────────▶ stories/US-ALT-001.md
-                                                            │
-BA viết task plan ──────────────────────────────────▶ tasks/BE-ALT-001.md
-                                                            │
-DEV-BE đọc task + story ◀──────────────────────────────────┘
-DEV-BE viết code ──────────────────────────────────▶ backend/internal/alerting/**
-DEV-BE viết result ────────────────────────────────▶ tasks/BE-ALT-001-DONE.md
-                                                            │
-QA đọc story (AC) + code + result ◀────────────────────────┘
-QA chạy tests, verify AC ─────────────────────────▶ reviews/QA-REPORT.md
-                                                            │
-DevSecOps đọc code + QA report ◀───────────────────────────┘
-DevSecOps audit security ──────────────────────────▶ reviews/SECURITY-AUDIT.md
-```
-
-**Quy tắc giao tiếp:**
-1. Agents KHÔNG BAO GIỜ đọc/sửa files của nhau đang viết
-2. Communication là ONE-WAY: viết xong → agent tiếp theo đọc
-3. Mỗi agent CHỈ viết vào files thuộc scope của mình
-4. Orchestrator kiểm tra `*-DONE.md` existence trước khi spawn wave tiếp
-
-### 4.3 STATE.md Format
+### 9.2 sprint-1.md
 
 ```markdown
 ---
-current_sprint: 1
-sprint_goal: "Implement Alerting BC core (domain + adapters + basic UI)"
-current_wave: 2
-total_waves: 4
-status: executing
+sprint: 1
+goal: "Implement Alerting BC core + basic infrastructure"
+start: 2026-03-18
+end: 2026-04-01
+status: in_progress
 ---
 
-## Sprint 1 Progress
+## Stories
 
-| Wave | Status | Tasks | Completed | Agent(s) |
-|------|--------|-------|-----------|----------|
-| 0 | done | 2 | 2 | DevSecOps |
-| 1 | done | 3 | 3 | DEV-BE x2 |
-| 2 | executing | 4 | 1 | DEV-BE, DEV-FE |
-| 3 | pending | 2 | 0 | DEV-FE |
-| 4 | pending | 1 | 0 | QA |
-
-## Story Points
-- Planned: 21
-- Completed: 13
-- Remaining: 8
+| Story | BC | SP | BA | Dev | QC | Sec | Status |
+|-------|----|----|-----|-----|-----|------|--------|
+| alerting/create-rule | alerting | 5 | done | in_progress | done | done | implementing |
+| alerting/list-rules | alerting | 3 | done | done | in_progress | pending | testing |
+| alerting/evaluate-rule | alerting | 8 | in_progress | pending | pending | pending | drafting |
+| infra/docker-compose | shared | 3 | done | n/a | n/a | done | done |
+| infra/db-migrations | shared | 2 | done | n/a | n/a | done | done |
 
 ## Velocity
-- Sprint 1 (in progress): ~13 SP (projected: 21)
+- Total SP: 21
+- Completed: 5
+- In Progress: 8
+- Remaining: 8
 ```
+
+### 9.3 LogMon Sprint Roadmap
+
+| Sprint | Focus | Key Stories |
+|--------|-------|-------------|
+| **1** | Foundation + Alerting Core | `infra/docker-compose`, `infra/db-migrations`, `alerting/create-rule`, `alerting/list-rules`, `alerting/evaluate-rule` |
+| **2** | Alerting Notifications + SLO | `alerting/notify-slack`, `alerting/notify-email`, `alerting/silence`, `slo/define-slo`, `slo/error-budget` |
+| **3** | Log Pipeline + CRUD Services | `logpipeline/switch-mode`, `logpipeline/retry-dlq`, `order/create-order`, `order/list-orders`, `user/register`, `user/login` |
+| **4** | Frontend Dashboard | `frontend/alert-management`, `frontend/slo-dashboard`, `frontend/log-viewer`, `frontend/service-overview` |
+| **5** | Monitoring Stack Integration | `infra/prometheus-config`, `infra/elk-pipeline`, `infra/grafana-dashboards`, `infra/kafka-setup` |
+| **6** | CI/CD + Production | `infra/github-actions`, `infra/nginx-ssl`, `security/penetration-test`, `security/hardening` |
 
 ---
 
-## 5. Sprint Plan cho LogMon
+## 10. Agent Configuration
 
-### 5.1 Product Backlog (High-Level)
-
-| Sprint | Focus | BCs | Epic |
-|--------|-------|-----|------|
-| **Sprint 1** | Foundation + Alerting Core | `shared`, `alerting` | Infrastructure setup, AlertRule CRUD, domain events |
-| **Sprint 2** | Alerting Notifications + SLO | `alerting`, `slo` | Slack/Email adapters, SLO definition, error budget |
-| **Sprint 3** | Log Pipeline + Order/User | `logpipeline`, `order`, `user` | Pipeline mode switching, CRUD services |
-| **Sprint 4** | Frontend Dashboard | `frontend` | Alert management, SLO dashboard, log viewer |
-| **Sprint 5** | Integration + Monitoring Stack | `infra` | Prometheus, ELK, Grafana, Docker Compose full stack |
-| **Sprint 6** | CI/CD + Production Readiness | `infra` | GitHub Actions, security hardening, load testing |
-
-### 5.2 Sprint 1 Chi Tiết (Ví Dụ)
-
-**Sprint Goal:** *"Setup foundation infrastructure và implement Alerting bounded context core — domain logic, persistence, REST API."*
-
-**Stories:**
-
-| ID | Story | SP | Wave |
-|----|-------|----|------|
-| US-INFRA-001 | Setup Docker Compose cho dev environment | 3 | 0 |
-| US-INFRA-002 | Setup PostgreSQL schema + migrations | 2 | 0 |
-| US-ALT-001 | Tạo Alert Rule mới | 5 | 1-2 |
-| US-ALT-002 | Liệt kê Alert Rules theo service | 3 | 1-2 |
-| US-ALT-003 | Alert evaluation engine (mock) | 5 | 2 |
-| US-ALT-004 | Alert management UI page | 3 | 3 |
-
-**Wave Breakdown:**
-
-```
-Wave 0 — Infrastructure (DevSecOps):
-  INFRA-001: Docker Compose (postgres, backend, frontend)
-  INFRA-002: DB migrations, Go project structure
-
-Wave 1 — Domain + Ports (DEV-BE, parallel):
-  BE-ALT-001: AlertRule aggregate root + domain errors + value objects
-  BE-ALT-002: AlertRuleRepository port interface + AlertReadModel port
-
-Wave 2 — Adapters + App (DEV-BE + DEV-FE, parallel):
-  BE-ALT-003: PostgreSQL adapter (implements AlertRuleRepository)
-  BE-ALT-004: HTTP handler (Gin routes for CRUD)
-  BE-ALT-005: CreateRule + ListRules command/query handlers
-  FE-ALT-001: API client + TypeScript types for alerting
-
-Wave 3 — UI (DEV-FE):
-  FE-ALT-002: Alert management page (list + create form)
-  FE-ALT-003: Error/loading/empty states
-
-Wave 4 — Verification (QA + DevSecOps):
-  QA-001: Full AC verification, test coverage report
-  SEC-001: Security audit (input validation, SQL injection, error messages)
-```
-
----
-
-## 6. Deviation Handling
-
-Khi agent gặp vấn đề ngoài scope task:
-
-| Rule | Tình huống | Action |
-|------|-----------|--------|
-| **R1** | Bug nhỏ trong code đang sửa | Auto-fix, ghi vào DONE.md deviations |
-| **R2** | Thiếu function/type cần thiết trong cùng BC | Auto-thêm, ghi vào DONE.md |
-| **R3** | Blocking issue (DB connection, build fail) | Auto-fix nếu < 10 phút, otherwise escalate |
-| **R4** | Cần thay đổi architecture / cross-BC change | **STOP** — escalate to User (Scrum Master) |
-
----
-
-## 7. Agent Spawn Configuration
-
-### 7.1 config.json
+### 10.1 config.json
 
 ```json
 {
+  "project": "logmon",
   "sprint_length_weeks": 2,
-  "max_concurrent_agents": 3,
   "models": {
     "ba": "opus",
     "dev_be": "sonnet",
     "dev_fe": "sonnet",
-    "qa": "opus",
+    "qc": "opus",
     "devsecops": "sonnet"
   },
-  "auto_advance_waves": true,
-  "require_qa_pass_before_merge": true,
-  "require_security_audit": true,
-  "commit_format": "{type}({bc}/{task_id}): {description}",
+  "story_path": "stories",
+  "draft_path": "ba",
+  "versions_path": ".versions",
   "bounded_contexts": [
     "alerting", "slo", "logpipeline", "order", "user", "shared"
-  ]
+  ],
+  "architecture": {
+    "alerting": "clean-arch-ddd-cqrs",
+    "slo": "clean-arch-ddd-cqrs",
+    "logpipeline": "clean-arch-ddd-cqrs",
+    "order": "clean-arch",
+    "user": "clean-arch"
+  },
+  "tech_spec_required_before_code": true,
+  "qc_parallel_with_dev": true,
+  "auto_version_on_release": true
 }
 ```
 
-### 7.2 Agent CLAUDE.md Context
+### 10.2 Agent Context Injection
 
-Mỗi agent khi spawn sẽ được inject context riêng:
+Mỗi agent khi spawn được inject context phù hợp với role:
 
-```
-BA Agent context:
-  - CLAUDE.md (project overview + architecture rules)
-  - doc/logmon.md Section 1-6 (system overview, components, data flows)
-  - .agile/PRODUCT-BACKLOG.md
-  - .agile/STATE.md
-
-DEV-BE Agent context:
-  - CLAUDE.md (FULL — architecture rules + style guide + security)
-  - doc/logmon.md Section 7-9 (project structure, backend details, coding rules)
-  - Relevant story file (stories/US-XXX.md)
-  - Task file (tasks/BE-XXX.md)
-
-DEV-FE Agent context:
-  - CLAUDE.md (project overview + frontend-relevant sections)
-  - Relevant story file
-  - Task file (tasks/FE-XXX.md)
-  - Existing component inventory (glob frontend/components/**)
-
-QA Agent context:
-  - CLAUDE.md (architecture rules + style guide + security)
-  - doc/logmon.md Section 9 (ALL coding rules)
-  - All stories for current sprint (stories/*.md)
-  - All DONE files (tasks/*-DONE.md)
-  - Source code being reviewed
-
-DevSecOps Agent context:
-  - CLAUDE.md (security section)
-  - doc/logmon.md Section 9.7, 9.9, 13 (security, infrastructure, deploy)
-  - infra/ directory
-  - .github/workflows/
-```
+| Agent | CLAUDE.md | logmon.md Sections | Story artifacts |
+|-------|-----------|-------------------|-----------------|
+| BA | Overview, Architecture Rules | 1-6 (system overview) | Existing stories, backlog |
+| DEV-BE | Full (arch + style + security) | 7-9 (structure + backend + rules) | story.md, tech-spec.md |
+| DEV-FE | Overview + frontend-relevant | 7, 9.1, 9.8 | story.md, tech-spec-fe.md |
+| QC | Architecture Rules, Testing | 9.2, 9.8 (error handling + testing) | story.md, test-cases.md |
+| DevSecOps | Security section | 9.7, 9.9, 13 (security + infra + deploy) | story.md, tech-spec.md, security/review.md |
 
 ---
 
-## 8. Definition of Done
-
-### Per Sprint
-- [ ] Tất cả stories trong sprint backlog: AC verified by QA
-- [ ] QA Report: PASS hoặc PASS_WITH_ISSUES (no blockers)
-- [ ] Security Audit: PASS (no critical/high issues)
-- [ ] `go test ./...` — all pass
-- [ ] `pnpm test` — all pass
-- [ ] `golangci-lint run` — no errors
-- [ ] Docker Compose stack starts successfully
-- [ ] All code committed with proper message format
-- [ ] STATE.md updated
-- [ ] RETRO.md completed
-
-### Per Agent Output
-| Agent | Definition of Done |
-|-------|-------------------|
-| BA | Story có: AC (Given/When/Then), REQ-ID, story points, BC assignment |
-| DEV-BE | Code compiles, tests pass, interface compliance verified, DONE.md written, git committed |
-| DEV-FE | No TypeScript errors, tests pass, responsive, DONE.md written, git committed |
-| QA | Every AC verified (pass/fail + evidence), coverage reported, bugs filed with file:line |
-| DevSecOps | OWASP checklist completed, no critical issues, Docker works, CI pipeline passes |
-
----
-
-## 9. Quick Start
+## 11. Quick Start
 
 ```bash
-# 1. Initialize agile directory
-mkdir -p .agile/sprints/sprint-01/{stories,tasks,reviews}
-mkdir -p .agile/knowledge
+# 1. Tạo directories
+mkdir -p ba stories .versions .agile/sprints
 
-# 2. Chạy Sprint Init
-/sprint:init
-# → BA Agent tạo PRODUCT-BACKLOG.md, SPRINT-BACKLOG.md draft
+# 2. BA tạo story đầu tiên
+/ba:new-story alerting/create-rule
+# → ba/alerting/create-rule/story.md (draft)
 
-# 3. Refine backlog
-/sprint:refine
-# → BA Agent viết stories với AC
+# 3. BA review và release
+/ba:review alerting/create-rule
+/ba:release alerting/create-rule v1.0.0
+# → stories/alerting/create-rule/story.md (published)
 
-# 4. Plan sprint
-/sprint:plan
-# → BA Agent tạo task breakdown, wave assignment
+# 4. Dev và QC chạy SONG SONG
+/dev:gen-tech-spec alerting/create-rule    # Dev terminal
+/qc:gen-test-cases alerting/create-rule    # QC terminal (parallel!)
 
-# 5. Execute sprint
-/sprint:execute
-# → DevSecOps (Wave 0) → DEV-BE (Wave 1-2) → DEV-FE (Wave 2-3) → parallel
+# 5. Dev implement
+/dev:gen-scaffold alerting/create-rule
+# ... code ...
+/dev:review alerting/create-rule
 
-# 6. Review sprint
-/sprint:review
-# → QA Agent verifies AC → DevSecOps audits security
+# 6. DevSecOps review
+/sec:review alerting/create-rule
 
-# 7. Retrospective
-/sprint:retro
-# → All agents contribute lessons learned
+# 7. QC gen scripts và test
+/qc:gen-scripts alerting/create-rule
 
-# 8. Next sprint
-/sprint:init
-# → Repeat cycle
+# 8. Nếu BA update story:
+/ba:release alerting/create-rule v1.1.0
+/dev:sync alerting/create-rule             # Dev chạy
+/qc:sync alerting/create-rule              # QC chạy
+/sec:sync alerting/create-rule             # DevSecOps chạy
 ```
 
 ---
 
-*Tài liệu này được thiết kế dựa trên [get-shit-done](https://github.com/gsd-build/get-shit-done) architecture, adapted cho 5-role AI Agent team theo Agile/Scrum methodology, tối ưu cho dự án LogMon.*
+*Tài liệu thiết kế dựa trên [get-shit-done](https://github.com/gsd-build/get-shit-done) architecture + Luồng làm việc chuẩn BA/Dev/QC, adapted cho 5-role team (BA, DEV-BE, DEV-FE, QC, DevSecOps) trên dự án LogMon.*
