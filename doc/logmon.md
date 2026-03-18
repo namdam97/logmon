@@ -839,16 +839,403 @@ input { kafka { topic: "logs-raw" } }
 
 ## 9. Quy Tắc Hệ Thống
 
-### Logging
+> **Tham khảo:** [Uber Go Style Guide](https://github.com/uber-go/guide/blob/master/style.md), [SOLID Go Design — Dave Cheney](https://dave.cheney.net/2016/08/20/solid-go-design), [OWASP Go Secure Coding Practices](https://owasp.org/www-project-go-secure-coding-practices-guide/)
+
+### 9.1 Go Code Style
+
+**Naming:**
+- Package names: lowercase, không underscore, không plural, **KHÔNG** dùng `common`, `util`, `helpers` (dùng `shared/` với sub-packages có tên rõ ràng)
+- Exported error variables: prefix `Err` → `ErrAlertNotFound`
+- Unexported globals: prefix `_` → `_defaultScrapeInterval`
+- Error types: suffix `Error` → `NotFoundError`, `ValidationError`
+- Enums bắt đầu từ 1 (không phải 0) trừ khi zero value có ý nghĩa:
+
+```go
+type Severity int
+const (
+    SeverityCritical Severity = iota + 1  // 1
+    SeverityWarning                        // 2
+    SeverityInfo                           // 3
+)
+```
+
+**Import ordering (2 groups, ngăn cách bằng dòng trống):**
+```go
+import (
+    "context"
+    "fmt"
+
+    "github.com/gin-gonic/gin"
+    "github.com/yourorg/logmon/internal/alerting/domain"
+)
+```
+
+**Function ordering trong file:**
+1. Type definition
+2. Constructor (`NewXYZ`)
+3. Methods trên receiver (group theo receiver)
+4. Plain utility functions cuối file
+
+**Early return — giảm nesting:**
+```go
+// BAD
+func (h *Handler) GetAlert(c *gin.Context) {
+    id := c.Param("id")
+    if id != "" {
+        alert, err := h.query.Handle(ctx, GetAlertQuery{ID: id})
+        if err == nil {
+            c.JSON(200, alert)
+        } else {
+            c.JSON(500, gin.H{"error": "internal error"})
+        }
+    } else {
+        c.JSON(400, gin.H{"error": "missing id"})
+    }
+}
+
+// GOOD
+func (h *Handler) GetAlert(c *gin.Context) {
+    id := c.Param("id")
+    if id == "" {
+        c.JSON(400, gin.H{"error": "missing id"})
+        return
+    }
+    alert, err := h.query.Handle(ctx, GetAlertQuery{ID: id})
+    if err != nil {
+        c.JSON(500, gin.H{"error": "internal error"})
+        return
+    }
+    c.JSON(200, alert)
+}
+```
+
+**Functional Options cho service configuration:**
+```go
+type Option func(*options)
+type options struct {
+    scrapeInterval time.Duration
+    retentionDays  int
+}
+
+func WithScrapeInterval(d time.Duration) Option {
+    return func(o *options) { o.scrapeInterval = d }
+}
+
+func NewPrometheusAdapter(addr string, opts ...Option) *PrometheusAdapter {
+    o := options{scrapeInterval: 15 * time.Second, retentionDays: 15}
+    for _, opt := range opts {
+        opt(&o)
+    }
+    // ...
+}
+```
+
+**Entry point — `run()` pattern:**
+```go
+func main() {
+    if err := run(); err != nil {
+        log.Fatal(err)
+    }
+}
+
+func run() error {
+    cfg, err := config.Load()
+    if err != nil {
+        return fmt.Errorf("load config: %w", err)
+    }
+    // wire dependencies, start server
+    // defer cleanup
+    return nil
+}
+```
+
+**Performance (hot path only):**
+- `strconv.Itoa()` thay vì `fmt.Sprint()` khi convert primitives
+- Specify container capacity: `make(map[string]int, expectedSize)`, `make([]T, 0, expectedSize)`
+- Chuyển `[]byte` một lần, tái sử dụng (không convert lặp lại trong loop)
+
+### 9.2 Error Handling
+
+**Decision matrix:**
+
+| Cần match? | Message | Approach |
+|------------|---------|----------|
+| Không | Static | `errors.New("alert not found")` |
+| Không | Dynamic | `fmt.Errorf("rule %s failed: %w", id, err)` |
+| Có | Static | `var ErrAlertNotFound = errors.New("alert not found")` |
+| Có | Dynamic | Custom error type `NotFoundError{ID: id}` |
+
+**Error wrapping — dùng context ngắn gọn, không dùng "failed to":**
+```go
+// BAD: "failed to get alert: failed to query DB: connection refused"
+return fmt.Errorf("failed to get alert: %w", err)
+
+// GOOD: "get alert: query DB: connection refused"
+return fmt.Errorf("get alert: %w", err)
+```
+
+**Wrap `%w` vs `%v`:**
+- `%w` — khi caller CẦN match underlying error (preferred)
+- `%v` — khi muốn ẨN implementation detail khỏi caller (dùng ở adapter boundary)
+
+```go
+// adapters/ — ẩn infrastructure errors, expose domain errors
+func (r *PostgresAlertRepo) FindByID(ctx context.Context, id string) (*domain.AlertRule, error) {
+    row := r.pool.QueryRow(ctx, query, id)
+    var a alertModel
+    if err := row.Scan(&a.ID, &a.Name); err != nil {
+        if errors.Is(err, pgx.ErrNoRows) {
+            return nil, domain.ErrAlertNotFound  // domain error, không wrap pgx
+        }
+        return nil, fmt.Errorf("scan alert %s: %v", id, err)  // %v: ẩn pgx detail
+    }
+    return a.toDomain(), nil
+}
+```
+
+**Handle once — log HOẶC return, KHÔNG làm cả hai:**
+```go
+// BAD: duplicate logging
+log.Printf("could not get alert %s: %v", id, err)
+return err
+
+// GOOD: wrap và return, để upstream xử lý
+return fmt.Errorf("get alert %s: %w", id, err)
+
+// GOOD: log và degrade (không return error)
+if err := emitMetrics(); err != nil {
+    log.Printf("emit metrics: %v", err)
+    // continue without error
+}
+```
+
+**Custom domain errors (cho match):**
+```go
+// domain/errors.go
+var (
+    ErrAlertNotFound   = errors.New("alert not found")
+    ErrRuleInvalid     = errors.New("invalid alert rule")
+    ErrBudgetExhausted = errors.New("error budget exhausted")
+)
+
+type ValidationError struct {
+    Field   string
+    Message string
+}
+func (e *ValidationError) Error() string {
+    return fmt.Sprintf("validation: %s — %s", e.Field, e.Message)
+}
+
+// Caller
+var ve *domain.ValidationError
+if errors.As(err, &ve) {
+    c.JSON(400, gin.H{"field": ve.Field, "error": ve.Message})
+    return
+}
+```
+
+**KHÔNG panic trong production code:**
+```go
+// BAD
+panic("missing required config")
+
+// GOOD
+return fmt.Errorf("missing required config: %s", key)
+```
+
+Exception: `template.Must()` và similar chỉ trong program init.
+
+### 9.3 Interface Design & SOLID Principles
+
+> *"Accept interfaces, return structs."* — Jack Lindamood
+> *"Require no more, promise no less."* — Jim Weirich
+
+**Single Responsibility (SRP) — mỗi package có MỘT lý do để thay đổi:**
+```
+# GOOD — mỗi package = 1 bounded context hoặc 1 concern
+internal/alerting/domain/     ← thay đổi khi business rules đổi
+internal/alerting/adapters/   ← thay đổi khi infrastructure đổi
+internal/shared/logger/       ← thay đổi khi logging strategy đổi
+
+# BAD — SRP violations
+internal/common/              ← thay đổi vì BẤT KỲ lý do gì
+internal/utils/               ← junk drawer
+internal/models/              ← mọi entity trong 1 package
+```
+
+**Interface Segregation (ISP) — interfaces nhỏ, focused:**
+```go
+// BAD — God interface, mọi consumer phải depend vào tất cả methods
+type AlertRepository interface {
+    FindByID(ctx context.Context, id string) (*AlertRule, error)
+    FindByService(ctx context.Context, svc string) ([]*AlertRule, error)
+    FindActive(ctx context.Context) ([]*AlertRule, error)
+    Save(ctx context.Context, rule *AlertRule) error
+    Delete(ctx context.Context, id string) error
+    UpdateStatus(ctx context.Context, id string, s Status) error
+}
+
+// GOOD — segregated, mỗi consumer chỉ depend vào cái nó cần
+type AlertFinder interface {
+    FindByID(ctx context.Context, id string) (*AlertRule, error)
+}
+
+type AlertSaver interface {
+    Save(ctx context.Context, rule *AlertRule) error
+}
+
+// Command handler chỉ cần Save
+type CreateRuleHandler struct {
+    alerts AlertSaver
+}
+
+// Query handler chỉ cần Find
+type GetAlertHandler struct {
+    alerts AlertFinder
+}
+
+// 1 struct concrete implement tất cả interfaces nhỏ
+type PostgresAlertRepo struct { pool *pgxpool.Pool }
+// satisfies AlertFinder, AlertSaver, etc. implicitly
+```
+
+**Dependency Inversion (DIP) — domain defines interfaces, infrastructure implements:**
+```
+Import direction (KHÔNG được vi phạm):
+
+cmd/main.go          ← wiring, biết mọi concrete type
+    |
+    ├── app/command/  ← depend on ports/ interfaces ONLY
+    │     ↓
+    │   domain/       ← pure Go, zero infrastructure imports
+    │
+    └── adapters/     ← implement ports/ interfaces
+          ↓
+        ports/        ← interfaces defined by domain needs
+```
+
+**Verify interface compliance tại compile time:**
+```go
+// Đặt ở đầu file adapter — fail ngay khi build nếu thiếu method
+var _ ports.AlertRuleRepository = (*PostgresAlertRepo)(nil)
+var _ ports.Notifier = (*SlackNotifier)(nil)
+var _ ports.MetricsReader = (*PrometheusReader)(nil)
+```
+
+**Không dùng pointer to interface:**
+```go
+// BAD — interface đã là reference type
+func process(r *io.Reader) { }
+
+// GOOD
+func process(r io.Reader) { }
+```
+
+### 9.4 Concurrency
+
+**Goroutine lifecycle — MỌI goroutine phải có cách stop VÀ cách wait:**
+```go
+// Prometheus scraper — background goroutine với lifecycle management
+type Scraper struct {
+    targets []string
+    stop    chan struct{}
+    done    chan struct{}
+}
+
+func NewScraper(targets []string) *Scraper {
+    s := &Scraper{
+        targets: targets,
+        stop:    make(chan struct{}),
+        done:    make(chan struct{}),
+    }
+    go s.run()
+    return s
+}
+
+func (s *Scraper) run() {
+    defer close(s.done)
+    ticker := time.NewTicker(15 * time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ticker.C:
+            s.scrapeAll()
+        case <-s.stop:
+            return
+        }
+    }
+}
+
+func (s *Scraper) Shutdown() {
+    close(s.stop)
+    <-s.done  // block cho đến khi goroutine exit
+}
+```
+
+**Copy slices/maps tại API boundaries (ngăn mutation từ bên ngoài):**
+```go
+// BAD — caller có thể mutate internal state
+func (s *AlertStore) GetActiveAlerts() []*AlertRule {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    return s.alerts  // caller gets reference to internal slice!
+}
+
+// GOOD — return copy
+func (s *AlertStore) GetActiveAlerts() []*AlertRule {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    result := make([]*AlertRule, len(s.alerts))
+    copy(result, s.alerts)
+    return result
+}
+```
+
+**Mutex patterns:**
+```go
+type AlertCache struct {
+    mu     sync.RWMutex            // KHÔNG embed (ẩn Lock/Unlock khỏi callers)
+    alerts map[string]*AlertRule
+}
+
+// KHÔNG dùng new(sync.Mutex) — zero value is ready to use
+var mu sync.Mutex
+```
+
+**Channel sizes — chỉ 0 (unbuffered) hoặc 1:**
+```go
+events := make(chan domain.Event, 1)  // buffered size 1: OK
+events := make(chan domain.Event)     // unbuffered: OK
+events := make(chan domain.Event, 64) // BAD: cần lý do rất rõ ràng
+```
+
+**KHÔNG dùng goroutines trong `init()`** — expose objects với explicit lifecycle thay vì fire-and-forget.
+
+### 9.5 Logging
 
 - Output: JSON to stdout (Filebeat collect)
 - Fields bắt buộc: `timestamp` (ISO8601), `level`, `service`, `trace_id`, `message`
 - HTTP logs thêm: `method`, `path`, `status`, `duration_ms`, `caller`
-- **KHÔNG** log sensitive data (password, token, PII)
+- **KHÔNG** log sensitive data (password, token, PII, session token, API key)
 - **KHÔNG** log request/response body
-- **KHÔNG** dùng `log.Println` / `fmt.Print` — chỉ dùng zerolog wrapper
+- **KHÔNG** dùng `log.Println` / `fmt.Print` — chỉ dùng zerolog wrapper từ `shared/logger/`
+- **KHÔNG** dùng `log.Fatal` trong request handlers (gọi `os.Exit`, skip defer cleanup) — chỉ dùng trong `main()`
 
-### Metrics
+**Security logging — events BẮT BUỘC phải log:**
+- Authentication attempts (cả success và failure)
+- Authorization failures (access denied)
+- Input validation failures
+- System exceptions và unexpected state changes
+- Admin function usage (tạo/xóa alert rules, thay đổi SLO)
+- TLS connection failures
+
+**Events KHÔNG ĐƯỢC log:**
+- Passwords, session tokens, JWT tokens
+- Database connection strings
+- Encryption keys
+- Full stack traces trong production (chỉ log ở DEBUG level)
+
+### 9.6 Metrics
 
 - Naming: `snake_case`, prefix `logmon_`
 - Counter phải có suffix `_total`
@@ -856,14 +1243,214 @@ input { kafka { topic: "logs-raw" } }
 - Labels cho phép: `method`, `path`, `status_code`, `service`
 - Mỗi service expose `/metrics` trên port riêng (API: 8080, metrics: 9090)
 
-### Infrastructure
+### 9.7 Security (OWASP Go Secure Coding Practices)
+
+**Input validation — validate TẤT CẢ input từ bên ngoài:**
+```go
+import "github.com/go-playground/validator/v10"
+
+type CreateRuleRequest struct {
+    Name       string `json:"name" validate:"required,min=3,max=100"`
+    Expression string `json:"expression" validate:"required,min=1"`
+    Severity   string `json:"severity" validate:"required,oneof=critical warning info"`
+    ForDuration string `json:"for" validate:"required,min=2"`
+}
+
+var validate = validator.New()
+
+func (h *Handler) CreateRule(c *gin.Context) {
+    var req CreateRuleRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(400, gin.H{"error": "invalid request body"})  // generic message
+        return
+    }
+    if err := validate.Struct(req); err != nil {
+        c.JSON(400, gin.H{"error": "validation failed"})  // KHÔNG expose field details
+        return
+    }
+    // ...
+}
+```
+
+**Authentication — bcrypt cho passwords, JWT cho sessions:**
+```go
+import "golang.org/x/crypto/bcrypt"
+
+// Hash password (registration)
+hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+
+// Verify password (login)
+if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password)) != nil {
+    // GENERIC error: không nói rõ username hay password sai
+    return ErrInvalidCredentials
+}
+
+// JWT cookie — TẤT CẢ flags đều quan trọng
+cookie := &http.Cookie{
+    Name:     "Auth",
+    Value:    signedToken,
+    HttpOnly: true,   // chặn JavaScript access (XSS protection)
+    Secure:   true,   // HTTPS only
+    SameSite: http.SameSiteStrictMode,
+    Path:     "/",
+    MaxAge:   1800,   // 30 phút
+}
+```
+
+**SQL Injection prevention — LUÔN dùng parameterized queries:**
+```go
+// BAD — SQL injection
+query := "SELECT * FROM alert_rules WHERE service = '" + service + "'"
+
+// GOOD — parameterized (pgx dùng $1, $2, ...)
+query := "SELECT id, name, expression FROM alert_rules WHERE service = $1"
+rows, err := pool.Query(ctx, query, service)
+```
+
+**HTTP Security Headers:**
+```go
+func SecurityHeaders() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        c.Header("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+        c.Header("X-Content-Type-Options", "nosniff")
+        c.Header("X-Frame-Options", "DENY")
+        c.Header("Content-Type", "application/json; charset=utf-8")
+        c.Next()
+    }
+}
+```
+
+**TLS configuration:**
+```go
+tlsConfig := &tls.Config{
+    MinVersion:         tls.VersionTLS12,
+    MaxVersion:         tls.VersionTLS13,
+    InsecureSkipVerify: false,  // LUÔN false trong production
+}
+```
+
+**Secrets management:**
+- **KHÔNG** hardcode credentials, API keys, JWT secrets trong source code
+- Load từ environment variables hoặc secrets manager
+- **KHÔNG** commit `.env` files
+- Dùng `crypto/rand` cho token generation (KHÔNG dùng `math/rand`)
+
+```go
+// BAD — predictable
+import "math/rand"
+token := rand.Intn(999999)
+
+// GOOD — cryptographically secure
+import "crypto/rand"
+import "math/big"
+n, _ := rand.Int(rand.Reader, big.NewInt(999999))
+```
+
+**Error messages to users — KHÔNG expose internal details:**
+```go
+// BAD — lộ stack trace, DB schema, internal paths
+c.JSON(500, gin.H{"error": err.Error()})
+
+// GOOD — generic message, log chi tiết internally
+logger.Error().Err(err).Str("alert_id", id).Msg("failed to get alert")
+c.JSON(500, gin.H{"error": "an internal error occurred"})
+```
+
+**Anti-patterns TUYỆT ĐỐI TRÁNH:**
+- `unsafe` package trong production code
+- `text/template` cho HTML output (dùng `html/template`)
+- `InsecureSkipVerify: true` trong TLS config
+- Ignore errors: `result, _ := doSomething()`
+- `log.Fatal` trong request handlers
+
+### 9.8 Testing
+
+**Table-driven tests:**
+```go
+func TestAlertRule_Evaluate(t *testing.T) {
+    tests := []struct {
+        give        float64   // current metric value
+        wantFiring  bool
+        wantEvents  int
+    }{
+        {give: 0.01, wantFiring: false, wantEvents: 0},
+        {give: 0.06, wantFiring: true, wantEvents: 1},   // > 5% threshold
+        {give: 0.05, wantFiring: false, wantEvents: 0},  // exactly at threshold
+    }
+
+    rule := domain.NewAlertRule("high-error-rate", "> 0.05", domain.SeverityCritical)
+    for _, tt := range tests {
+        t.Run(fmt.Sprintf("value=%.2f", tt.give), func(t *testing.T) {
+            events := rule.Evaluate(tt.give)
+            require.Equal(t, tt.wantFiring, rule.IsFiring())
+            require.Len(t, events, tt.wantEvents)
+        })
+    }
+}
+```
+
+**Naming convention:** slice `tests`, each case `tt`, input prefix `give`, output prefix `want`.
+
+**KHÔNG dùng mutable globals — inject dependencies:**
+```go
+// BAD — mutating global for testing
+var _timeNow = time.Now
+
+// GOOD — inject qua struct field
+type RuleEvaluator struct {
+    now func() time.Time   // injectable
+}
+
+func NewRuleEvaluator() *RuleEvaluator {
+    return &RuleEvaluator{now: time.Now}
+}
+
+// In test:
+eval := &RuleEvaluator{now: func() time.Time { return fixedTime }}
+```
+
+**Interface mocking (lợi ích của ports/):**
+```go
+// Unit test domain logic KHÔNG cần database
+type mockAlertRepo struct {
+    alerts map[string]*domain.AlertRule
+}
+
+func (m *mockAlertRepo) Save(ctx context.Context, rule *domain.AlertRule) error {
+    m.alerts[rule.ID()] = rule
+    return nil
+}
+
+func (m *mockAlertRepo) FindByID(ctx context.Context, id string) (*domain.AlertRule, error) {
+    if a, ok := m.alerts[id]; ok {
+        return a, nil
+    }
+    return nil, domain.ErrAlertNotFound
+}
+
+func TestCreateRule(t *testing.T) {
+    repo := &mockAlertRepo{alerts: make(map[string]*domain.AlertRule)}
+    handler := command.NewCreateRuleHandler(repo)
+    err := handler.Handle(context.Background(), command.CreateRule{
+        Name:       "high-error-rate",
+        Expression: "rate(logmon_http_requests_total{status=~\"5..\"}[5m]) > 0.05",
+        Severity:   "critical",
+    })
+    require.NoError(t, err)
+    require.Len(t, repo.alerts, 1)
+}
+```
+
+**Dùng `require.NoError` (không `assert.NoError`) cho setup steps** — fail immediately thay vì continue với state sai.
+
+### 9.9 Infrastructure
 
 - Mọi Docker service phải có: healthcheck, resource limits, restart policy
 - Network isolation: `app_net`, `monitoring_net`, `kafka_net`
 - Dùng named volumes cho persistent data (ES, Prometheus, Kafka)
 - Secrets qua environment variables, **KHÔNG** commit `.env`
 
-### Alerting
+### 9.10 Alerting
 
 - Mọi alert phải có: `severity`, `service`, `runbook_url`
 - `for` duration: critical ≥ 1m, warning ≥ 5m

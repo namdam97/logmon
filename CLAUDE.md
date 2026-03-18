@@ -85,16 +85,66 @@ ports/        — interfaces + EventPublisher + ReadModel interfaces
 adapters/     — implementations + infrastructure adapters (Prometheus, Slack, Kafka, ES)
 ```
 
-## Style Guide
+## Go Style Guide
 
-- Error wrapping: `fmt.Errorf("doing X: %w", err)`
-- Logging: chỉ dùng zerolog wrapper từ `shared/logger/`, KHÔNG dùng `log.Println` / `fmt.Print`
-- Tests: table-driven, dùng `testify/require` (không `assert`) cho setup steps
-- No global state, dependency injection qua constructor
-- Context propagation: mọi function có side effect nhận `context.Context`
-- Interface định nghĩa ở `ports/` (nơi sử dụng), không ở nơi implement
+> Chi tiết + code examples: `doc/logmon.md` Section 9
+> Tham khảo: [Uber Go Style Guide](https://github.com/uber-go/guide/blob/master/style.md), [SOLID Go — Dave Cheney](https://dave.cheney.net/2016/08/20/solid-go-design), [OWASP Go-SCP](https://owasp.org/www-project-go-secure-coding-practices-guide/)
+
+### Error Handling
+- Wrap errors with concise context: `fmt.Errorf("get alert: %w", err)` (KHÔNG dùng "failed to")
+- `%w` khi caller cần match, `%v` khi ẩn implementation (adapter boundary)
+- Handle once: log HOẶC return, KHÔNG làm cả hai
+- Domain errors: `var ErrAlertNotFound = errors.New(...)` + custom `ValidationError` type
+- KHÔNG panic trong production — chỉ `errors.New()` / `fmt.Errorf()`
+
+### Interface Design (SOLID)
+- **Accept interfaces, return structs** (ISP)
+- Small, focused interfaces: `AlertFinder` (1 method) thay vì `AlertRepository` (6 methods)
+- Verify compliance tại compile time: `var _ ports.Notifier = (*SlackNotifier)(nil)`
+- Domain defines interfaces (DIP): `ports/` chứa interfaces, `adapters/` implement
+- KHÔNG dùng pointer to interface, KHÔNG embed `sync.Mutex`
+
+### Code Organization
+- Package names: lowercase, no `common`/`util`/`helpers`
+- Imports: 2 groups (stdlib | third-party), separated by blank line
+- Function order: type → constructor → methods → utilities
+- Early return / guard clauses, avoid deep nesting
+- Functional options cho service configuration
+- `run()` pattern: `main()` chỉ gọi `run()`, exit once
+
+### Concurrency
+- Mọi goroutine PHẢI có stop signal + wait mechanism (stop/done channels hoặc WaitGroup)
+- Copy slices/maps tại API boundaries
+- Mutex: named field (KHÔNG embed), zero value is ready
+- Channel sizes: chỉ 0 hoặc 1
+- KHÔNG goroutines trong `init()`
+
+### Naming
+- Exported error vars: `ErrAlertNotFound`
+- Unexported globals: `_defaultScrapeInterval`
+- Error types: suffix `Error` → `ValidationError`
+- Enums start at 1 (`iota + 1`)
+- Tests: `tests` slice, `tt` case, `give`/`want` prefix
+
+### General
+- Logging: chỉ dùng zerolog wrapper, KHÔNG `log.Println` / `fmt.Print`
+- Tests: table-driven, `testify/require` cho setup (KHÔNG `assert`), inject dependencies (KHÔNG mutable globals)
+- `context.Context` as first param cho mọi function có side effect
 - Metrics naming: `snake_case`, prefix `logmon_`, Counter suffix `_total`
 - KHÔNG dùng high-cardinality labels: `user_id`, `request_id`, `trace_id`
+- `strconv` over `fmt` cho primitive conversion; specify container capacity
+
+## Security (OWASP)
+
+- **Input validation**: `go-playground/validator/v10` cho tất cả request structs
+- **Parameterized queries**: LUÔN dùng `$1, $2` (pgx), KHÔNG string concatenation
+- **Auth**: bcrypt cho passwords, JWT với `HttpOnly + Secure + SameSite` cookies
+- **Errors to users**: generic messages only, log chi tiết internally
+- **HTTP headers**: HSTS, X-Content-Type-Options, X-Frame-Options trên mọi response
+- **TLS**: MinVersion TLS 1.2, `InsecureSkipVerify: false` ALWAYS
+- **Secrets**: env vars / secrets manager, KHÔNG hardcode, KHÔNG commit `.env`
+- **Random**: `crypto/rand` cho tokens, KHÔNG `math/rand`
+- **Anti-patterns**: KHÔNG `unsafe` package, KHÔNG `text/template` cho HTML, KHÔNG `log.Fatal` trong handlers
 
 ## Domain Events (DDD BCs only)
 
