@@ -2,8 +2,8 @@
 
 > **Dự án:** LogMon — Logging & Monitoring Platform
 > **Inspired by:** [get-shit-done](https://github.com/gsd-build/get-shit-done), Luồng làm việc chuẩn BA/Dev/QC
-> **Ngày cập nhật:** 2026-03-18
-> **Status:** DRAFT — Chờ Boss NamDam confirm
+> **Ngày cập nhật:** 2026-03-19
+> **Status:** CONFIRMED
 
 ---
 
@@ -13,7 +13,9 @@
 
 **Story là đơn vị trung tâm**, không phải Sprint. Mỗi story là một feature/sub-feature có:
 - `story.md` do BA viết — **single source of truth**
-- `tech/tech-spec.md` do Dev sinh ra từ story — bản cam kết kỹ thuật với BA
+- `tech/tech-spec.md` do Dev-BE sinh ra từ story — bản cam kết kỹ thuật với BA
+- `tech/openapi.yaml` do Dev-BE sinh — **API contract chung** giữa BE/FE/QC
+- `tech/tech-spec-fe.md` do Dev-FE sinh — tham chiếu openapi.yaml
 - `test/test-cases.md` do QC sinh ra từ story — **song song** với Dev, không cần chờ code
 - `security/review.md` do DevSecOps sinh ra từ story + tech-spec
 
@@ -24,12 +26,17 @@
 │                     stories/ (Source of Truth)                 │
 │                                                               │
 │  stories/alerting/create-rule/                                │
-│    ├── story.md          ← BA viết                            │
-│    ├── tech/tech-spec.md ← Dev sinh từ story                  │
-│    ├── tech/scaffold/    ← Dev sinh code scaffold              │
-│    ├── test/test-cases.md← QC sinh từ story (SONG SONG Dev)   │
-│    ├── test/scripts/     ← QC sinh automation scripts          │
-│    └── security/review.md← DevSecOps audit                    │
+│    ├── story.md              ← BA viết                        │
+│    ├── tech/                                                  │
+│    │   ├── openapi.yaml      ← Dev-BE sinh (SHARED CONTRACT) │
+│    │   ├── tech-spec.md      ← Dev-BE: DDD layers, domain    │
+│    │   └── tech-spec-fe.md   ← Dev-FE: components, pages     │
+│    ├── test/                                                  │
+│    │   ├── test-cases.md     ← QC sinh từ story (SONG SONG)  │
+│    │   ├── scripts/          ← QC sinh sau khi code exists    │
+│    │   └── bugs/             ← QC bug reports                 │
+│    └── security/                                              │
+│        └── review.md         ← DevSecOps audit                │
 └──────────────────────────────────────────────────────────────┘
          ▲          ▲           ▲           ▲
          │          │           │           │
@@ -46,12 +53,12 @@
 
 | # | Nguyên tắc | Mô tả |
 |---|-----------|-------|
-| 1 | **Story = Source of Truth** | Mọi artifacts (tech-spec, test-cases, security) sinh ra từ story.md |
-| 2 | **QC song song với Dev** | QC gen test cases từ story, KHÔNG cần chờ code xong |
-| 3 | **Versioned stories** | Story có version (v1.0.0 → v1.1.0). Update → auto-diff → sync impact |
-| 4 | **Draft → Release** | BA draft ở `ba/`, review xong mới release sang `stories/` |
-| 5 | **Tech Spec trước Code** | Dev gen tech-spec TRƯỚC khi code — cam kết kỹ thuật với BA |
-| 6 | **Sync on change** | Story thay đổi → Dev sync tech-spec, QC sync test-cases |
+| 1 | **Story = Source of Truth** | Mọi artifacts (tech-spec, openapi, test-cases, security) sinh ra từ story.md |
+| 2 | **OpenAPI = API Contract** | `openapi.yaml` là shared contract giữa BE, FE, QC. Machine-readable, gen code được |
+| 3 | **QC song song với Dev** | QC gen test cases từ story, KHÔNG cần chờ code xong |
+| 4 | **Tech Spec trước Code** | Dev gen tech-spec + openapi TRƯỚC khi code — cam kết kỹ thuật với BA |
+| 5 | **Versioned stories** | Story có version (v1.0.0 → v1.1.0) qua git tags. Update → auto-diff → sync |
+| 6 | **Sync on change** | Story thay đổi → Dev sync tech-spec, QC sync test-cases, Sec sync review |
 | 7 | **Multi-user capable** | Mỗi role có thể là người thật + AI agent riêng trên cùng repo |
 
 ---
@@ -68,41 +75,53 @@
 # Review trước khi release (AI check gaps, ambiguity)
 /ba:review alerting/create-rule
 
-# Release draft → stories/ (đây mới là bản Dev & QC dùng)
+# Release: commit + git tag (source of truth cho Dev & QC)
 /ba:release alerting/create-rule v1.0.0
 ```
 
-**Kết quả:** `stories/alerting/create-rule/story.md` — source of truth cho Dev và QC.
+**Kết quả:** `stories/alerting/create-rule/story.md` + git tag `story/alerting/create-rule/v1.0.0`
 
-**BA draft directory:** `ba/alerting/create-rule/story.md` (workspace riêng, chưa publish)
+BA viết trực tiếp trong `stories/`. Draft = uncommitted changes. Release = commit + git tag.
 
 ### Giai Đoạn 2 — Dev generate từ story
 
 ```bash
-# Story → Tech Spec (CHẠY TRƯỚC khi code)
+# Story → Tech Spec + OpenAPI (CHẠY TRƯỚC khi code)
 /dev:gen-tech-spec alerting/create-rule
+/dev:gen-openapi alerting/create-rule
 
-# Tech Spec → Code Scaffold
-/dev:gen-scaffold alerting/create-rule
-
-# Implement code (Dev tự code hoặc AI assist)
+# Implement code từ tech-spec (Dev tự code hoặc AI assist)
 # ...
 
 # Check implementation vs AC trong story
 /dev:review alerting/create-rule
 ```
 
-**Output:** `stories/alerting/create-rule/tech/tech-spec.md`
+```bash
+# Dev-FE đọc openapi.yaml → gen TypeScript client tự động
+/dev-fe:gen-client alerting/create-rule
 
-> **Quy tắc:** Chạy `/dev:gen-tech-spec` **trước** khi code. Tech spec là bản cam kết với BA — nếu AI generate sai hướng, điều chỉnh agent config trước khi viết code.
+# Dev-FE gen tech-spec cho UI (tham chiếu openapi.yaml)
+/dev-fe:gen-tech-spec alerting/create-rule
+
+# Check UI vs AC
+/dev-fe:review alerting/create-rule
+```
+
+**Output:**
+- `stories/alerting/create-rule/tech/tech-spec.md` (BE architecture)
+- `stories/alerting/create-rule/tech/openapi.yaml` (shared API contract)
+- `stories/alerting/create-rule/tech/tech-spec-fe.md` (FE architecture)
+
+> **Quy tắc:** Chạy `/dev:gen-tech-spec` + `/dev:gen-openapi` **trước** khi code. Tech spec + OpenAPI là bản cam kết với BA — nếu AI generate sai hướng, điều chỉnh trước khi viết code.
 
 ### Giai Đoạn 3 — QC generate từ story (SONG SONG với Giai Đoạn 2)
 
 ```bash
-# Story → Test Cases + Coverage Matrix
+# Story → Test Cases + Coverage Matrix (SONG SONG với Dev, không cần code)
 /qc:gen-test-cases alerting/create-rule
 
-# Test Cases → Automation Scripts
+# Test Cases + actual code → Automation Scripts (SAU KHI code exists)
 /qc:gen-scripts alerting/create-rule
 
 # Viết bug report có cấu trúc theo Test Case ID
@@ -111,7 +130,7 @@
 
 **Output:** `stories/alerting/create-rule/test/test-cases.md`
 
-> **Quy tắc:** QC chạy `/qc:gen-test-cases` **song song** với Dev — không cần chờ code xong mới viết test.
+> **Quy tắc:** `/qc:gen-test-cases` chạy **song song** với Dev (từ story, không cần code). `/qc:gen-scripts` chạy **sau** khi Dev implement (cần import types thật).
 
 ### Giai Đoạn 4 — DevSecOps review (SONG SONG với Giai Đoạn 2-3)
 
@@ -119,7 +138,7 @@
 # Story + Tech Spec → Security Review
 /sec:review alerting/create-rule
 
-# Infra requirements từ story
+# Infra requirements từ story (chỉ khi story cần infra mới)
 /sec:gen-infra alerting/create-rule
 
 # Audit code sau khi Dev implement xong
@@ -131,16 +150,16 @@
 ### Giai Đoạn 5 — BA update story (vòng lặp)
 
 ```bash
-# BA chỉnh sửa ba/alerting/create-rule/story.md
+# BA chỉnh sửa stories/alerting/create-rule/story.md
 # Sau đó release version mới:
 /ba:release alerting/create-rule v1.1.0
-# → Auto-diff vs v1.0.0, tóm tắt thay đổi, ước lượng impact lên Dev & QC
+# → git tag mới, auto-diff vs v1.0.0, tóm tắt thay đổi
 ```
 
 ```bash
 # Dev nhận thông báo, chạy:
 /dev:sync alerting/create-rule
-# → AI chỉ đúng phần tech-spec nào cần update
+# → AI chỉ đúng phần tech-spec + openapi nào cần update
 
 # QC nhận thông báo, chạy:
 /qc:sync alerting/create-rule
@@ -154,14 +173,14 @@
 ### Timeline Song Song
 
 ```
-Thời gian ──────────────────────────────────────────────────▶
+Thời gian ──────────────────────────────────────────────────────────▶
 
-BA:       ██ new-story ██ review ██ release v1.0 ·········· ██ update ██ release v1.1
-                                       │                          │
-Dev-BE:                                ├── gen-tech-spec ── code ── review ·· sync ── fix
-Dev-FE:                                ├── gen-tech-spec ── code ── review ·· sync ── fix
-QC:                                    ├── gen-test-cases ── gen-scripts ··· sync ── update
-DevSecOps:                             └── review ── gen-infra ············ sync ── audit
+BA:       ██ new-story ██ review ██ release v1.0 ··········· ██ update ██ release v1.1
+                                       │                           │
+Dev-BE:                                ├── tech-spec + openapi ── code ── review · sync ── fix
+Dev-FE:                                ├── gen-client + tech-spec-fe ── code ····· sync ── fix
+QC:                                    ├── gen-test-cases ·· gen-scripts (sau code) sync ── update
+DevSecOps:                             └── review ── gen-infra ·················· sync ── audit
                                        │
                                   Song song từ đây
 ```
@@ -170,26 +189,23 @@ DevSecOps:                             └── review ── gen-infra ···�
 
 ## 3. Story Directory Structure
 
-### 3.1 Stories (Published — Source of Truth)
-
 ```
 stories/
 ├── alerting/                                ← Bounded Context
 │   ├── create-rule/                         ← Feature
-│   │   ├── story.md                         ← BA output (versioned)
+│   │   ├── story.md                         ← BA output (versioned via git tags)
 │   │   ├── tech/
-│   │   │   ├── tech-spec.md                 ← Dev-BE tech spec
-│   │   │   ├── tech-spec-fe.md              ← Dev-FE tech spec (nếu có UI)
-│   │   │   └── scaffold/                    ← Generated code scaffold
+│   │   │   ├── openapi.yaml                 ← Dev-BE: SHARED API CONTRACT
+│   │   │   ├── tech-spec.md                 ← Dev-BE: DDD layers, domain model
+│   │   │   └── tech-spec-fe.md              ← Dev-FE: components, pages, state
 │   │   ├── test/
-│   │   │   ├── test-cases.md                ← QC test cases + coverage matrix
-│   │   │   ├── scripts/                     ← QC automation scripts
-│   │   │   └── bugs/                        ← QC bug reports (BUG-001.md, ...)
+│   │   │   ├── test-cases.md                ← QC: coverage matrix, test scenarios
+│   │   │   ├── scripts/                     ← QC: automation scripts (_test.go, .test.ts)
+│   │   │   └── bugs/                        ← QC: bug reports (BUG-001.md, ...)
 │   │   └── security/
-│   │       ├── review.md                    ← DevSecOps security review
-│   │       └── infra.md                     ← DevSecOps infra requirements
+│   │       └── review.md                    ← DevSecOps: security review + infra notes
 │   │
-│   ├── evaluate-rule/                       ← Another feature
+│   ├── evaluate-rule/
 │   │   └── ...
 │   ├── silence-alert/
 │   │   └── ...
@@ -215,25 +231,10 @@ stories/
     └── login/
 ```
 
-### 3.2 BA Draft Space
-
-```
-ba/                                          ← BA workspace (chưa publish)
-├── alerting/
-│   └── create-rule/
-│       └── story.md                         ← Draft, đang soạn
-└── ...
-```
-
-### 3.3 Versions (tự động khi release)
-
-```
-.versions/                                   ← Auto-generated khi /ba:release
-├── alerting/
-│   └── create-rule/
-│       ├── v1.0.0/story.md                  ← Snapshot v1.0.0
-│       └── v1.1.0/story.md                  ← Snapshot v1.1.0
-└── ...
+**Versioning:** Git tags thay vì file copies. So sánh versions:
+```bash
+git diff story/alerting/create-rule/v1.0.0..story/alerting/create-rule/v1.1.0 \
+  -- stories/alerting/create-rule/story.md
 ```
 
 ---
@@ -242,48 +243,47 @@ ba/                                          ← BA workspace (chưa publish)
 
 ### 4.1 BA Commands
 
-| Command | Mô tả | Input | Output |
-|---------|-------|-------|--------|
-| `/ba:new-story <path>` | Tạo story mới từ template | BC + feature name | `ba/{path}/story.md` |
-| `/ba:review <path>` | AI review gaps, ambiguity, missing AC | `ba/{path}/story.md` | Feedback inline hoặc suggestions |
-| `/ba:release <path> <version>` | Promote draft → `stories/`, auto-diff nếu update | `ba/{path}/story.md` | `stories/{path}/story.md` + version snapshot |
-| `/ba:impact <path>` | Ước lượng impact thay đổi lên Dev & QC | Diff giữa versions | Impact report |
+| Command | Mô tả | Output |
+|---------|-------|--------|
+| `/ba:new-story <path>` | Tạo story mới từ template | `stories/{path}/story.md` |
+| `/ba:review <path>` | AI review gaps, ambiguity, missing AC | Feedback inline |
+| `/ba:release <path> <version>` | Commit + git tag, auto-diff nếu update | Git tag + change summary |
 
 ### 4.2 Dev-BE Commands
 
-| Command | Mô tả | Input | Output |
-|---------|-------|-------|--------|
-| `/dev:gen-tech-spec <path>` | Đọc story → sinh tech-spec.md | `stories/{path}/story.md` | `stories/{path}/tech/tech-spec.md` |
-| `/dev:gen-scaffold <path>` | Đọc tech-spec → sinh code scaffold | `tech-spec.md` | `backend/internal/{bc}/**/*.go` |
-| `/dev:review <path>` | Kiểm tra implementation vs AC trong story | story.md + source code | Pass/Fail report |
-| `/dev:sync <path>` | Xem phần tech-spec nào cần update sau khi story thay đổi | story.md diff | Tech-spec update plan |
+| Command | Mô tả | Output |
+|---------|-------|--------|
+| `/dev:gen-tech-spec <path>` | Story → tech-spec.md (DDD layer mapping) | `stories/{path}/tech/tech-spec.md` |
+| `/dev:gen-openapi <path>` | Story + tech-spec → openapi.yaml | `stories/{path}/tech/openapi.yaml` |
+| `/dev:review <path>` | Check implementation vs AC trong story | Pass/Fail report |
+| `/dev:sync <path>` | Detect tech-spec + openapi changes needed after story update | Update plan |
 
 ### 4.3 Dev-FE Commands
 
-| Command | Mô tả | Input | Output |
-|---------|-------|-------|--------|
-| `/dev-fe:gen-tech-spec <path>` | Đọc story → sinh tech-spec-fe.md | `stories/{path}/story.md` | `stories/{path}/tech/tech-spec-fe.md` |
-| `/dev-fe:gen-scaffold <path>` | Đọc tech-spec → sinh UI scaffold | `tech-spec-fe.md` | `frontend/**/*.tsx` |
-| `/dev-fe:review <path>` | Kiểm tra UI vs AC | story.md + source code | Pass/Fail report |
-| `/dev-fe:sync <path>` | Detect changes needed after story update | story.md diff | UI update plan |
+| Command | Mô tả | Output |
+|---------|-------|--------|
+| `/dev-fe:gen-client <path>` | openapi.yaml → TypeScript API client | `frontend/services/{bc}-api.ts` |
+| `/dev-fe:gen-tech-spec <path>` | Story + openapi → tech-spec-fe.md | `stories/{path}/tech/tech-spec-fe.md` |
+| `/dev-fe:review <path>` | Check UI vs AC trong story | Pass/Fail report |
+| `/dev-fe:sync <path>` | Detect changes needed after story update | UI update plan |
 
 ### 4.4 QC Commands
 
-| Command | Mô tả | Input | Output |
-|---------|-------|-------|--------|
-| `/qc:gen-test-cases <path>` | Đọc story → sinh test-cases.md + coverage matrix | `stories/{path}/story.md` | `stories/{path}/test/test-cases.md` |
-| `/qc:gen-scripts <path>` | Đọc test cases → sinh automation scripts | `test-cases.md` | `stories/{path}/test/scripts/*.go` hoặc `*.ts` |
-| `/qc:bug-report <path> <TC-id>` | Tạo bug report có cấu trúc theo TC | Test case + evidence | `stories/{path}/test/bugs/BUG-{N}.md` |
-| `/qc:sync <path>` | Xem test case nào invalid sau khi story thay đổi | story.md diff | Invalid test case list |
+| Command | Mô tả | Output |
+|---------|-------|--------|
+| `/qc:gen-test-cases <path>` | Story → test-cases.md + coverage matrix (SONG SONG Dev) | `stories/{path}/test/test-cases.md` |
+| `/qc:gen-scripts <path>` | test-cases + actual code → automation scripts (SAU code) | `stories/{path}/test/scripts/` |
+| `/qc:bug-report <path> <TC-id>` | Tạo bug report có cấu trúc theo TC | `stories/{path}/test/bugs/BUG-{N}.md` |
+| `/qc:sync <path>` | Detect test cases invalid sau khi story thay đổi | Invalid test case list |
 
 ### 4.5 DevSecOps Commands
 
-| Command | Mô tả | Input | Output |
-|---------|-------|-------|--------|
-| `/sec:review <path>` | Security review từ story + tech-spec | story.md + tech-spec.md | `stories/{path}/security/review.md` |
-| `/sec:gen-infra <path>` | Sinh infra requirements từ story | story.md | `stories/{path}/security/infra.md` |
-| `/sec:audit <path>` | Audit source code (OWASP checklist) | Source code | Security audit report |
-| `/sec:sync <path>` | Detect security review nào cần update | story.md diff | Security update plan |
+| Command | Mô tả | Output |
+|---------|-------|--------|
+| `/sec:review <path>` | Security review từ story + tech-spec + openapi | `stories/{path}/security/review.md` |
+| `/sec:gen-infra <path>` | Sinh infra requirements (chỉ khi story cần) | Infra notes trong review.md |
+| `/sec:audit <path>` | Audit source code (OWASP checklist) | Security audit report |
+| `/sec:sync <path>` | Detect security review nào cần update | Security update plan |
 
 ### 4.6 Sprint Commands (Orchestration)
 
@@ -310,8 +310,8 @@ priority: high
 story_points: 5
 sprint: 1
 status: released
-created: 2026-03-18
-updated: 2026-03-18
+created: 2026-03-19
+updated: 2026-03-19
 ---
 
 ## User Story
@@ -356,14 +356,14 @@ so that **I get notified when a service exceeds error threshold**.
 - Notification channels setup (story riêng: alerting/notify-slack)
 ```
 
-### 5.2 tech-spec.md (Dev Output)
+### 5.2 tech-spec.md (Dev-BE Output)
 
 ```markdown
 ---
 story: US-ALT-001
 story_version: 1.0.0
 author: DEV-BE
-created: 2026-03-18
+created: 2026-03-19
 ---
 
 ## Architecture Decision
@@ -394,25 +394,7 @@ created: 2026-03-18
 | File | Purpose |
 |------|---------|
 | `postgres/repo.go` | PostgreSQL implementation |
-| `http/handler.go` | POST /api/v1/alert-rules |
-
-## API Contract
-```
-POST /api/v1/alert-rules
-Content-Type: application/json
-
-{
-  "name": "high-error-rate",
-  "expression": "rate(logmon_http_requests_total{status=~\"5..\"}[5m]) > 0.05",
-  "severity": "critical",
-  "for_duration": "2m",
-  "service": "order-service"
-}
-
-→ 201 Created: { "id": "uuid", "name": "...", "status": "active" }
-→ 400 Bad Request: { "error": "invalid PromQL expression: ..." }
-→ 409 Conflict: { "error": "rule name already exists" }
-```
+| `http/handler.go` | POST /api/v1/alert-rules (see openapi.yaml) |
 
 ## AC Mapping
 | AC | Implementation |
@@ -423,14 +405,82 @@ Content-Type: application/json
 | AC4 | repo.FindByName() check before save |
 ```
 
-### 5.3 test-cases.md (QC Output)
+### 5.3 openapi.yaml (Dev-BE Output — Shared Contract)
+
+```yaml
+openapi: 3.1.0
+info:
+  title: LogMon Alerting API — create-rule
+  version: 1.0.0
+paths:
+  /api/v1/alert-rules:
+    post:
+      summary: Create a new alert rule
+      operationId: createAlertRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlertRuleRequest'
+      responses:
+        '201':
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          description: Validation error
+        '409':
+          description: Rule name already exists
+
+components:
+  schemas:
+    CreateAlertRuleRequest:
+      type: object
+      required: [name, expression, severity, for_duration, service]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 100
+        expression:
+          type: string
+          description: PromQL expression
+        severity:
+          type: string
+          enum: [critical, warning, info]
+        for_duration:
+          type: string
+          pattern: '^\d+[smh]$'
+          example: '2m'
+        service:
+          type: string
+
+    AlertRule:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+```
+
+> **Dev-FE** chạy `/dev-fe:gen-client` từ file này → tự động sinh TypeScript API client, không cần viết tay.
+
+### 5.4 test-cases.md (QC Output)
 
 ```markdown
 ---
 story: US-ALT-001
 story_version: 1.0.0
 author: QC
-created: 2026-03-18
+created: 2026-03-19
 total_cases: 8
 ---
 
@@ -511,10 +561,10 @@ total_cases: 8
 | **Context** | `doc/logmon.md` Sections 1-6, `CLAUDE.md` overview, existing stories |
 
 **Trách nhiệm:**
-- Viết stories với AC (Given/When/Then)
+- Viết stories với AC (Given/When/Then) trực tiếp trong `stories/`
 - Review stories trước release (gaps, ambiguity)
-- Versioning: release v1.0.0, v1.1.0, ...
-- Impact analysis khi update story
+- Release: commit + git tag (v1.0.0, v1.1.0, ...)
+- Auto-diff khi release update version
 
 ### 6.2 DEV-BE (Backend Developer)
 
@@ -523,12 +573,12 @@ total_cases: 8
 | **Model** | Sonnet (balanced cho code generation) |
 | **Tools** | Read, Write, Edit, Bash, Glob, Grep |
 | **KHÔNG có** | WebSearch, WebFetch |
-| **Context** | `CLAUDE.md` full, `doc/logmon.md` Sections 7-9, story + tech-spec |
+| **Context** | `CLAUDE.md` full, `doc/logmon.md` Sections 7-9, story + tech-spec + openapi |
 
 **Trách nhiệm:**
-- Gen tech-spec từ story (architecture mapping to DDD layers)
-- Gen code scaffold theo Clean Architecture
-- Implement business logic
+- Gen tech-spec từ story (DDD layer mapping)
+- Gen openapi.yaml (API contract cho FE/QC consume)
+- Implement code từ tech-spec
 - Unit tests + integration tests
 - Commit format: `feat({bc}/US-{id}): {description}`
 
@@ -545,11 +595,11 @@ total_cases: 8
 | **Model** | Sonnet |
 | **Tools** | Read, Write, Edit, Bash, Glob, Grep |
 | **KHÔNG có** | WebSearch, WebFetch |
-| **Context** | `CLAUDE.md`, story + tech-spec-fe, existing components |
+| **Context** | `CLAUDE.md`, story + openapi.yaml + tech-spec-fe, existing components |
 
 **Trách nhiệm:**
-- Gen tech-spec-fe (component tree, pages, API client)
-- Gen UI scaffold (Next.js pages, shadcn/ui components)
+- Gen TypeScript API client từ openapi.yaml (tự động, không viết tay)
+- Gen tech-spec-fe (component tree, pages, state — tham chiếu openapi)
 - Implement responsive UI
 - TypeScript strict, no `any`
 
@@ -560,11 +610,11 @@ total_cases: 8
 | **Model** | Opus (reasoning sâu cho test design) |
 | **Tools** | Read, Write, Bash, Glob, Grep |
 | **KHÔNG có** | Edit source code (chỉ viết test files + reports) |
-| **Context** | Story (AC), tech-spec, source code, `doc/logmon.md` Section 9 |
+| **Context** | Story (AC), openapi.yaml, tech-spec, source code, `doc/logmon.md` Section 9 |
 
 **Trách nhiệm:**
 - Gen test cases từ story (SONG SONG với Dev, không chờ code)
-- Gen automation scripts (Go tests, E2E tests)
+- Gen automation scripts từ test-cases + actual code (SAU khi code exists)
 - Bug reports có cấu trúc (theo TC-id)
 - Sync test cases khi story thay đổi
 
@@ -581,11 +631,11 @@ total_cases: 8
 | **Model** | Sonnet |
 | **Tools** | Read, Write, Edit, Bash, Glob, Grep |
 | **KHÔNG có** | WebSearch, WebFetch |
-| **Context** | `doc/logmon.md` Sections 9.7 + 13, story + tech-spec, infra configs |
+| **Context** | `doc/logmon.md` Sections 9.7 + 13, story + tech-spec + openapi, infra configs |
 
 **Trách nhiệm:**
-- Security review từ story + tech-spec (OWASP checklist)
-- Gen infra requirements (Docker, CI/CD needs per story)
+- Security review từ story + tech-spec + openapi (OWASP checklist)
+- Gen infra requirements (chỉ khi story cần infra mới)
 - Audit source code sau khi Dev implement
 - Sync security review khi story thay đổi
 
@@ -603,30 +653,41 @@ Terminal 1 — BA (người thật):
   > /ba:new-story alerting/create-rule
   > /ba:review alerting/create-rule
   > /ba:release alerting/create-rule v1.0.0
-  > git add stories/ && git commit && git push
+  > git push
 
 Terminal 2 — Dev-BE (người thật):
   $ claude
   > git pull  # lấy story mới từ BA
   > /dev:gen-tech-spec alerting/create-rule
-  > /dev:gen-scaffold alerting/create-rule
-  > # ... code implementation ...
+  > /dev:gen-openapi alerting/create-rule
+  > # ... implement from tech-spec ...
   > /dev:review alerting/create-rule
-  > git add . && git commit && git push
+  > git push
 
-Terminal 3 — QC (người thật):        ← SONG SONG với Terminal 2
+Terminal 3 — Dev-FE (người thật):    ← SAU KHI openapi.yaml exists
+  $ claude
+  > git pull  # lấy openapi.yaml từ Dev-BE
+  > /dev-fe:gen-client alerting/create-rule
+  > /dev-fe:gen-tech-spec alerting/create-rule
+  > # ... implement UI ...
+  > /dev-fe:review alerting/create-rule
+  > git push
+
+Terminal 4 — QC (người thật):        ← SONG SONG với Terminal 2-3
   $ claude
   > git pull  # lấy story mới từ BA
   > /qc:gen-test-cases alerting/create-rule
+  > # ... chờ code exists ...
   > /qc:gen-scripts alerting/create-rule
-  > git add stories/alerting/create-rule/test/ && git commit && git push
+  > git push
 
-Terminal 4 — DevSecOps (người thật):  ← SONG SONG với Terminal 2-3
+Terminal 5 — DevSecOps (người thật):  ← SONG SONG với Terminal 2-4
   $ claude
   > git pull
   > /sec:review alerting/create-rule
-  > /sec:gen-infra alerting/create-rule
-  > git add . && git commit && git push
+  > # ... chờ code exists ...
+  > /sec:audit alerting/create-rule
+  > git push
 ```
 
 ### 7.2 Git Branching Strategy
@@ -648,16 +709,21 @@ Merge order:
 
 ### 7.3 Single-User Mode
 
-Một người điều khiển tất cả agents cũng hoạt động:
-
 ```bash
-# Đội 1 người, chạy lần lượt
+# 1 người, chạy lần lượt
 /ba:new-story alerting/create-rule
 /ba:release alerting/create-rule v1.0.0
-/dev:gen-tech-spec alerting/create-rule      # rồi implement
-/qc:gen-test-cases alerting/create-rule      # rồi gen scripts
+
+/dev:gen-tech-spec alerting/create-rule
+/dev:gen-openapi alerting/create-rule
+/qc:gen-test-cases alerting/create-rule       # parallel: from story, no code needed
+
+# implement code ...
+
+/dev-fe:gen-client alerting/create-rule        # after openapi exists
+/qc:gen-scripts alerting/create-rule           # after code exists
 /sec:review alerting/create-rule
-/dev:review alerting/create-rule             # self-check
+/dev:review alerting/create-rule               # self-check
 ```
 
 ---
@@ -669,14 +735,15 @@ BA update story v1.0.0 → v1.1.0
          │
          ├──▶ /ba:release alerting/create-rule v1.1.0
          │         │
-         │         ├── Auto-diff: so sánh v1.0.0 vs v1.1.0
-         │         ├── Change summary: "Added AC5, modified AC2 threshold"
-         │         └── Impact estimate: "Dev: 2 files affected, QC: 3 test cases affected"
+         │         ├── Git tag: story/alerting/create-rule/v1.1.0
+         │         ├── Auto-diff: git diff v1.0.0..v1.1.0
+         │         └── Change summary: "Added AC5, modified AC2 threshold"
          │
          ├──▶ Dev chạy /dev:sync alerting/create-rule
          │         └── AI output: "tech-spec.md cần update:
-         │                          - Section 'API Contract': thêm field 'labels'
-         │                          - Section 'AC Mapping': thêm AC5 mapping"
+         │                          - Section 'AC Mapping': thêm AC5
+         │                          openapi.yaml cần update:
+         │                          - Thêm field 'labels' trong request schema"
          │
          ├──▶ QC chạy /qc:sync alerting/create-rule
          │         └── AI output: "test-cases.md impact:
@@ -713,8 +780,8 @@ Sprints là cách **nhóm stories** để tracking tiến độ, không phải d
 ---
 sprint: 1
 goal: "Implement Alerting BC core + basic infrastructure"
-start: 2026-03-18
-end: 2026-04-01
+start: 2026-03-19
+end: 2026-04-02
 status: in_progress
 ---
 
@@ -764,8 +831,7 @@ status: in_progress
     "devsecops": "sonnet"
   },
   "story_path": "stories",
-  "draft_path": "ba",
-  "versions_path": ".versions",
+  "openapi_as_contract": true,
   "bounded_contexts": [
     "alerting", "slo", "logpipeline", "order", "user", "shared"
   ],
@@ -777,8 +843,7 @@ status: in_progress
     "user": "clean-arch"
   },
   "tech_spec_required_before_code": true,
-  "qc_parallel_with_dev": true,
-  "auto_version_on_release": true
+  "qc_parallel_with_dev": true
 }
 ```
 
@@ -789,10 +854,10 @@ Mỗi agent khi spawn được inject context phù hợp với role:
 | Agent | CLAUDE.md | logmon.md Sections | Story artifacts |
 |-------|-----------|-------------------|-----------------|
 | BA | Overview, Architecture Rules | 1-6 (system overview) | Existing stories, backlog |
-| DEV-BE | Full (arch + style + security) | 7-9 (structure + backend + rules) | story.md, tech-spec.md |
-| DEV-FE | Overview + frontend-relevant | 7, 9.1, 9.8 | story.md, tech-spec-fe.md |
-| QC | Architecture Rules, Testing | 9.2, 9.8 (error handling + testing) | story.md, test-cases.md |
-| DevSecOps | Security section | 9.7, 9.9, 13 (security + infra + deploy) | story.md, tech-spec.md, security/review.md |
+| DEV-BE | Full (arch + style + security) | 7-9 (structure + backend + rules) | story.md → gen tech-spec.md + openapi.yaml |
+| DEV-FE | Overview + frontend-relevant | 7, 9.1, 9.8 | story.md + openapi.yaml → gen tech-spec-fe.md + client |
+| QC | Architecture Rules, Testing | 9.2, 9.8 (error handling + testing) | story.md + openapi.yaml → gen test-cases.md |
+| DevSecOps | Security section | 9.7, 9.9, 13 (security + infra + deploy) | story.md + tech-spec.md + openapi.yaml |
 
 ---
 
@@ -800,37 +865,45 @@ Mỗi agent khi spawn được inject context phù hợp với role:
 
 ```bash
 # 1. Tạo directories
-mkdir -p ba stories .versions .agile/sprints
+mkdir -p stories .agile/sprints
 
 # 2. BA tạo story đầu tiên
 /ba:new-story alerting/create-rule
-# → ba/alerting/create-rule/story.md (draft)
+# → stories/alerting/create-rule/story.md
 
 # 3. BA review và release
 /ba:review alerting/create-rule
 /ba:release alerting/create-rule v1.0.0
-# → stories/alerting/create-rule/story.md (published)
+# → git tag story/alerting/create-rule/v1.0.0
 
-# 4. Dev và QC chạy SONG SONG
-/dev:gen-tech-spec alerting/create-rule    # Dev terminal
-/qc:gen-test-cases alerting/create-rule    # QC terminal (parallel!)
+# 4. Dev-BE gen tech-spec + openapi (TRƯỚC khi code)
+/dev:gen-tech-spec alerting/create-rule
+/dev:gen-openapi alerting/create-rule
 
-# 5. Dev implement
-/dev:gen-scaffold alerting/create-rule
-# ... code ...
-/dev:review alerting/create-rule
+# 5. QC gen test cases SONG SONG (không cần chờ code)
+/qc:gen-test-cases alerting/create-rule
 
-# 6. DevSecOps review
-/sec:review alerting/create-rule
+# 6. Dev-FE gen client từ openapi
+/dev-fe:gen-client alerting/create-rule
+/dev-fe:gen-tech-spec alerting/create-rule
 
-# 7. QC gen scripts và test
+# 7. Dev implement code từ tech-spec ...
+
+# 8. QC gen scripts SAU khi code exists
 /qc:gen-scripts alerting/create-rule
 
-# 8. Nếu BA update story:
+# 9. DevSecOps review
+/sec:review alerting/create-rule
+
+# 10. Verify
+/dev:review alerting/create-rule
+/dev-fe:review alerting/create-rule
+
+# 11. Nếu BA update story:
 /ba:release alerting/create-rule v1.1.0
-/dev:sync alerting/create-rule             # Dev chạy
-/qc:sync alerting/create-rule              # QC chạy
-/sec:sync alerting/create-rule             # DevSecOps chạy
+/dev:sync alerting/create-rule
+/qc:sync alerting/create-rule
+/sec:sync alerting/create-rule
 ```
 
 ---
