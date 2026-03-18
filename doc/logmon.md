@@ -420,61 +420,183 @@ graph TB
 
 ## 7. Cấu Trúc Dự Án
 
+### 7.1 Tổng Quan Kiến Trúc Backend
+
+Backend áp dụng **2 mô hình kiến trúc** tùy theo complexity của mỗi Bounded Context:
+
+| Bounded Context | Pattern | Lý do |
+|-----------------|---------|-------|
+| `order/` | **Clean Architecture** | CRUD-like, domain đơn giản |
+| `user/` | **Clean Architecture** | CRUD-like, domain đơn giản |
+| `alerting/` | **Clean Architecture + DDD + CQRS** | Business rules phức tạp: threshold, inhibition, routing, escalation |
+| `slo/` | **Clean Architecture + DDD + CQRS** | Error budget calculation, burn rate, compliance tracking |
+| `logpipeline/` | **Clean Architecture + DDD + CQRS** | Mode switching, DLQ retry, ILM policy management |
+| `shared/` | **Shared Kernel** | Infrastructure concerns dùng chung |
+
+### 7.2 Cấu Trúc Thư Mục
+
 ```
 logmon/
-├── backend/                                 ← Go Microservices
+├── backend/                                    ← Go Backend
 │   ├── cmd/
-│   │   ├── orderservice/main.go             ← Order Service
-│   │   └── userservice/main.go              ← User Service
+│   │   ├── orderservice/main.go                ← Order Service entry point
+│   │   └── userservice/main.go                 ← User Service entry point
 │   ├── internal/
-│   │   ├── middleware/
-│   │   │   ├── logging.go                   ← Structured logging (zerolog)
-│   │   │   ├── metrics.go                   ← Prometheus metrics
-│   │   │   └── recovery.go                  ← Panic recovery
-│   │   ├── logger/logger.go                 ← zerolog wrapper + trace_id
-│   │   ├── metrics/
-│   │   │   ├── registry.go                  ← Prometheus registry
-│   │   │   └── collectors.go                ← Custom business metrics
-│   │   ├── handler/                         ← HTTP handlers (Gin)
-│   │   ├── service/                         ← Business logic
-│   │   ├── repository/                      ← DB access (pgx)
-│   │   └── model/                           ← Domain models
+│   │   │
+│   │   ├── order/                              ── Clean Architecture ──
+│   │   │   ├── domain/
+│   │   │   │   ├── order.go                    ← Entity + business rules
+│   │   │   │   ├── errors.go                   ← Domain-specific errors
+│   │   │   │   └── value_objects.go            ← OrderID, Money, Status
+│   │   │   ├── app/
+│   │   │   │   ├── create_order.go             ← Use case
+│   │   │   │   ├── cancel_order.go             ← Use case
+│   │   │   │   └── get_order.go                ← Use case
+│   │   │   ├── ports/
+│   │   │   │   ├── repository.go               ← OrderRepository interface
+│   │   │   │   └── cache.go                    ← OrderCache interface
+│   │   │   └── adapters/
+│   │   │       ├── http/handler.go             ← Gin HTTP handlers
+│   │   │       ├── postgres/repo.go            ← pgx implementation
+│   │   │       └── redis/cache.go              ← Redis cache implementation
+│   │   │
+│   │   ├── user/                               ── Clean Architecture ──
+│   │   │   ├── domain/
+│   │   │   │   ├── user.go                     ← Entity
+│   │   │   │   └── errors.go                   ← Domain errors
+│   │   │   ├── app/
+│   │   │   │   ├── register_user.go            ← Use case
+│   │   │   │   └── get_user.go                 ← Use case
+│   │   │   ├── ports/
+│   │   │   │   └── repository.go               ← UserRepository interface
+│   │   │   └── adapters/
+│   │   │       ├── http/handler.go             ← Gin HTTP handlers
+│   │   │       └── postgres/repo.go            ← pgx implementation
+│   │   │
+│   │   ├── alerting/                           ── Clean Architecture + DDD + CQRS ──
+│   │   │   ├── domain/
+│   │   │   │   ├── alert_rule.go               ← Aggregate Root
+│   │   │   │   ├── alert_instance.go           ← Entity (trạng thái alert)
+│   │   │   │   ├── notification_channel.go     ← Value Object
+│   │   │   │   ├── severity.go                 ← Value Object (critical/warning/info)
+│   │   │   │   ├── silence.go                  ← Entity (silence window)
+│   │   │   │   ├── events.go                   ← Domain Events
+│   │   │   │   └── errors.go                   ← Domain errors
+│   │   │   ├── app/
+│   │   │   │   ├── command/                    ← Write side (CQRS)
+│   │   │   │   │   ├── create_rule.go          ← Tạo alert rule mới
+│   │   │   │   │   ├── update_rule.go          ← Cập nhật rule
+│   │   │   │   │   ├── acknowledge_alert.go    ← Xác nhận đã thấy alert
+│   │   │   │   │   ├── silence_alert.go        ← Tạm tắt alert
+│   │   │   │   │   └── resolve_alert.go        ← Đánh dấu resolved
+│   │   │   │   └── query/                      ← Read side (CQRS)
+│   │   │   │       ├── active_alerts.go        ← Lấy alerts đang firing
+│   │   │   │       ├── alert_history.go        ← Lịch sử alerts
+│   │   │   │       └── rule_evaluation.go      ← Trạng thái evaluation
+│   │   │   ├── ports/
+│   │   │   │   ├── repository.go               ← AlertRuleRepository interface
+│   │   │   │   ├── event_publisher.go          ← EventPublisher interface
+│   │   │   │   ├── notifier.go                 ← Notifier interface
+│   │   │   │   └── read_model.go               ← AlertReadModel interface (CQRS)
+│   │   │   └── adapters/
+│   │   │       ├── http/handler.go             ← Alert management API
+│   │   │       ├── postgres/repo.go            ← Alert persistence
+│   │   │       ├── prometheus/evaluator.go     ← Prometheus rule management
+│   │   │       ├── slack/notifier.go           ← Slack webhook sender
+│   │   │       └── email/notifier.go           ← Email sender
+│   │   │
+│   │   ├── slo/                                ── Clean Architecture + DDD + CQRS ──
+│   │   │   ├── domain/
+│   │   │   │   ├── slo.go                      ← Aggregate Root (SLO definition)
+│   │   │   │   ├── error_budget.go             ← Value Object (remaining budget)
+│   │   │   │   ├── burn_rate.go                ← Value Object (consumption speed)
+│   │   │   │   ├── events.go                   ← Domain Events
+│   │   │   │   └── errors.go                   ← Domain errors
+│   │   │   ├── app/
+│   │   │   │   ├── command/                    ← DefineSLO, RecalculateBudget
+│   │   │   │   └── query/                      ← SLOCompliance, BudgetRemaining
+│   │   │   ├── ports/
+│   │   │   │   ├── repository.go               ← SLORepository interface
+│   │   │   │   ├── metrics_reader.go           ← MetricsReader interface (query Prometheus)
+│   │   │   │   └── read_model.go               ← SLOReadModel interface (CQRS)
+│   │   │   └── adapters/
+│   │   │       ├── http/handler.go
+│   │   │       ├── postgres/repo.go
+│   │   │       └── prometheus/reader.go        ← PromQL query adapter
+│   │   │
+│   │   ├── logpipeline/                        ── Clean Architecture + DDD + CQRS ──
+│   │   │   ├── domain/
+│   │   │   │   ├── pipeline.go                 ← Aggregate Root
+│   │   │   │   ├── pipeline_mode.go            ← Value Object (ModeA/ModeB)
+│   │   │   │   ├── index_lifecycle.go          ← Value Object (hot/warm/delete)
+│   │   │   │   ├── dead_letter.go              ← Entity (DLQ entry)
+│   │   │   │   ├── events.go                   ← Domain Events
+│   │   │   │   └── errors.go                   ← Domain errors
+│   │   │   ├── app/
+│   │   │   │   ├── command/                    ← SwitchMode, RetryDLQ, UpdateILMPolicy
+│   │   │   │   └── query/                      ← PipelineStatus, DLQCount, IndexStats
+│   │   │   ├── ports/
+│   │   │   │   ├── repository.go               ← PipelineRepository interface
+│   │   │   │   ├── message_broker.go           ← MessageBroker interface
+│   │   │   │   └── search_engine.go            ← SearchEngine interface
+│   │   │   └── adapters/
+│   │   │       ├── http/handler.go
+│   │   │       ├── postgres/repo.go
+│   │   │       ├── kafka/broker.go             ← Kafka producer/consumer
+│   │   │       ├── elasticsearch/engine.go     ← ES index management
+│   │   │       └── logstash/controller.go      ← Logstash pipeline control
+│   │   │
+│   │   └── shared/                             ── Shared Kernel ──
+│   │       ├── auth/middleware.go              ← JWT verification middleware
+│   │       ├── errors/types.go                 ← Typed application errors
+│   │       ├── logger/logger.go                ← zerolog wrapper + trace_id
+│   │       ├── metrics/
+│   │       │   ├── registry.go                 ← Prometheus registry
+│   │       │   ├── collectors.go               ← Custom business metrics
+│   │       │   └── middleware.go               ← Prometheus HTTP middleware
+│   │       ├── middleware/
+│   │       │   ├── logging.go                  ← Structured logging middleware
+│   │       │   └── recovery.go                 ← Panic recovery middleware
+│   │       └── eventbus/
+│   │           ├── bus.go                      ← In-process event bus interface
+│   │           └── memory.go                   ← In-memory implementation
+│   │
 │   └── go.mod
 │
-├── infra/                                   ← Infrastructure-as-Code
-│   ├── docker/docker-compose.yml            ← Full stack orchestration
+├── infra/                                      ← Infrastructure-as-Code
+│   ├── docker/docker-compose.yml               ← Full stack orchestration
 │   ├── prometheus/
-│   │   ├── prometheus.yml                   ← Scrape config
-│   │   ├── rules/                           ← Alert rules
+│   │   ├── prometheus.yml                      ← Scrape config
+│   │   ├── rules/                              ← Alert rules
 │   │   └── alertmanager.yml
 │   ├── elk/
 │   │   ├── filebeat/filebeat.yml
-│   │   ├── logstash/pipeline/main.conf      ← Kafka → Parse → ES
+│   │   ├── logstash/pipeline/main.conf         ← Kafka → Parse → ES
 │   │   └── elasticsearch/
-│   │       ├── ilm-policy.json              ← Index Lifecycle Management
+│   │       ├── ilm-policy.json                 ← Index Lifecycle Management
 │   │       └── index-template.json
-│   ├── kafka/topics.sh                      ← Topic creation
+│   ├── kafka/topics.sh                         ← Topic creation
 │   └── grafana/
 │       ├── provisioning/
 │       │   ├── datasources/datasources.yml
 │       │   └── dashboards/dashboards.yml
 │       └── dashboards/
-│           ├── service-overview.json         ← Developer: request rate, errors
-│           ├── logs-explorer.json            ← Developer: log search, trace_id
-│           ├── infrastructure.json           ← DevOps: CPU/RAM/disk per host
-│           ├── slo-dashboard.json            ← SRE: error budget, latency SLO
-│           └── alerting-overview.json        ← All: active alerts, history
+│           ├── service-overview.json            ← Developer: request rate, errors
+│           ├── logs-explorer.json               ← Developer: log search, trace_id
+│           ├── infrastructure.json              ← DevOps: CPU/RAM/disk per host
+│           ├── slo-dashboard.json               ← SRE: error budget, latency SLO
+│           └── alerting-overview.json           ← All: active alerts, history
 │
-└── frontend/                                ← Next.js Monitoring Dashboard
+└── frontend/                                   ← Next.js Monitoring Dashboard
     ├── app/
-    │   ├── page.tsx                          ← Dashboard overview
-    │   ├── services/page.tsx                 ← Service health
-    │   ├── metrics/page.tsx                  ← Grafana embed
-    │   ├── logs/page.tsx                     ← Log viewer
-    │   └── alerts/page.tsx                   ← Alert management
-    ├── components/                           ← Shared UI components
-    ├── services/                             ← API client layer
-    └── types/                               ← TypeScript definitions
+    │   ├── page.tsx                             ← Dashboard overview
+    │   ├── services/page.tsx                    ← Service health
+    │   ├── metrics/page.tsx                     ← Grafana embed
+    │   ├── logs/page.tsx                        ← Log viewer
+    │   └── alerts/page.tsx                      ← Alert management
+    ├── components/                              ← Shared UI components
+    ├── services/                                ← API client layer
+    └── types/                                   ← TypeScript definitions
 ```
 
 ---
@@ -483,24 +605,147 @@ logmon/
 
 ### 8.1 Backend — Go Microservices
 
-**Kiến trúc Layered:**
+#### Tổng Quan Kiến Trúc
+
+Backend áp dụng 2 mô hình kiến trúc tùy theo complexity:
+
+| Mô hình | Áp dụng cho | Đặc điểm |
+|---------|-------------|-----------|
+| **Clean Architecture** | `order/`, `user/` | Domain đơn giản, CRUD-like. Layers: domain → app → ports → adapters |
+| **Clean Arch + DDD + CQRS** | `alerting/`, `slo/`, `logpipeline/` | Business rules phức tạp. Thêm: Command/Query split, Domain Events, Aggregate Roots |
+
+#### Layer Direction (strict, áp dụng cho TẤT CẢ BCs)
+
 ```
-HTTP Request → middleware/ → handler/ → service/ → repository/ → PostgreSQL
-                  ↓
-             logging.go (trace_id, JSON log)
-             metrics.go (Counter, Histogram)
-             recovery.go (panic → 500)
+adapters → ports ← app → domain
 ```
 
-**Middleware Chain (thứ tự bắt buộc):**
+- `domain/` không import gì ngoài Go standard library
+- `app/` chỉ import `domain/` và `ports/`
+- `ports/` chỉ chứa interfaces
+- `adapters/` implement interfaces từ `ports/`
+- Không cross-BC imports — giao tiếp qua domain events hoặc shared kernel
+
+#### Clean Architecture (order, user)
+
+```
+HTTP Request
+    ↓
+shared/middleware/ (recovery → logging → metrics → auth)
+    ↓
+adapters/http/handler.go          ← Gin HTTP handler, gọi use case
+    ↓
+app/create_order.go               ← Use case, orchestrate domain logic
+    ↓
+domain/order.go                   ← Entity + business rules (pure Go)
+    ↓
+ports/repository.go               ← Interface (OrderRepository)
+    ↓
+adapters/postgres/repo.go         ← pgx implementation
+    ↓
+PostgreSQL
+```
+
+#### Clean Architecture + DDD + CQRS (alerting, slo, logpipeline)
+
+```
+HTTP Request
+    ↓
+shared/middleware/ (recovery → logging → metrics → auth)
+    ↓
+adapters/http/handler.go
+    ↓
+┌─────────── CQRS Split ───────────┐
+│                                   │
+│  WRITE (Command)                  │  READ (Query)
+│  app/command/create_rule.go       │  app/query/active_alerts.go
+│       ↓                          │       ↓
+│  domain/alert_rule.go            │  ports/read_model.go
+│  (Aggregate Root,                │  (AlertReadModel interface)
+│   validate business rules,       │       ↓
+│   emit Domain Events)            │  adapters/postgres/read_model.go
+│       ↓                          │  (denormalized views, cache)
+│  ports/repository.go             │
+│       ↓                          │
+│  adapters/postgres/repo.go       │
+│       ↓                          │
+│  ports/event_publisher.go        │
+│       ↓                          │
+│  shared/eventbus/bus.go          │
+│       ↓                          │
+│  Subscribers (cross-BC)          │
+└───────────────────────────────────┘
+```
+
+**Domain Events Flow (cross-BC communication):**
+```
+alerting/domain:
+  AlertFired         → shared/eventbus → slo/app: RecordFailure
+  AlertResolved      → shared/eventbus → slo/app: RecordRecovery
+
+slo/domain:
+  BudgetExhausted    → shared/eventbus → alerting/app: CreateCriticalAlert
+
+logpipeline/domain:
+  PipelineModeChanged → shared/eventbus → alerting/app: UpdatePipelineAlerts
+  DLQThresholdExceeded → shared/eventbus → alerting/app: CreateWarningAlert
+```
+
+#### Bounded Context: Alerting (DDD + CQRS)
+
+| DDD Concept | Implementation | Mô tả |
+|-------------|---------------|-------|
+| **Aggregate Root** | `AlertRule` | Quản lý vòng đời rule: create → evaluate → fire → resolve |
+| **Entity** | `AlertInstance` | Một lần firing cụ thể (có trạng thái riêng) |
+| **Entity** | `Silence` | Silence window (tạm tắt alert trong khoảng thời gian) |
+| **Value Object** | `Severity` | critical / warning / info (immutable) |
+| **Value Object** | `NotificationChannel` | Slack webhook URL / Email address |
+| **Domain Event** | `AlertFired` | Emitted khi rule chuyển sang FIRING |
+| **Domain Event** | `AlertResolved` | Emitted khi alert tự khỏi |
+| **Domain Event** | `AlertAcknowledged` | Emitted khi engineer xác nhận đã thấy |
+
+**CQRS Commands & Queries:**
+
+| Side | Handler | Mô tả |
+|------|---------|-------|
+| Command | `CreateRule` | Tạo alert rule mới, validate PromQL expression |
+| Command | `AcknowledgeAlert` | Engineer xác nhận đã thấy alert |
+| Command | `SilenceAlert` | Tạm tắt notifications trong time window |
+| Command | `ResolveAlert` | Đánh dấu alert đã resolved |
+| Query | `ActiveAlerts` | Lấy tất cả alerts đang firing (read model, có thể cache) |
+| Query | `AlertHistory` | Lịch sử alerts với filter (service, severity, time range) |
+| Query | `RuleEvaluation` | Trạng thái evaluation của rules |
+
+#### Bounded Context: SLO (DDD + CQRS)
+
+| DDD Concept | Implementation | Mô tả |
+|-------------|---------------|-------|
+| **Aggregate Root** | `ServiceLevelObjective` | SLO definition (target, window, indicator) |
+| **Value Object** | `ErrorBudget` | Budget remaining (calculated from SLI data) |
+| **Value Object** | `BurnRate` | Tốc độ tiêu thụ error budget (1h, 6h, 24h windows) |
+| **Domain Event** | `BudgetExhausted` | Budget còn 0% → trigger critical alert |
+| **Domain Event** | `BurnRateExceeded` | Burn rate > threshold → early warning |
+
+#### Bounded Context: LogPipeline (DDD + CQRS)
+
+| DDD Concept | Implementation | Mô tả |
+|-------------|---------------|-------|
+| **Aggregate Root** | `Pipeline` | Pipeline configuration (mode, targets, filters) |
+| **Value Object** | `PipelineMode` | ModeA (direct) / ModeB (Kafka buffer) |
+| **Value Object** | `IndexLifecycle` | hot(7d) → warm(30d) → delete(90d) |
+| **Entity** | `DeadLetter` | Failed log entry in DLQ (retryable) |
+| **Domain Event** | `PipelineModeChanged` | Mode switch A↔B |
+| **Domain Event** | `DLQThresholdExceeded` | DLQ count > threshold |
+
+#### Middleware Chain (thứ tự bắt buộc, shared cho tất cả BCs)
 
 | # | Middleware | Chức năng |
 |---|-----------|-----------|
-| 1 | `recovery.go` | Catch panics, log stack trace, trả HTTP 500 |
-| 2 | `logging.go` | Inject trace_id (UUID), log request/response, duration |
-| 3 | `metrics.go` | Record `http_requests_total`, `http_request_duration_seconds` |
-| 4 | `auth (JWT)` | Verify token |
-| 5 | `handler` | Business endpoint |
+| 1 | `shared/middleware/recovery.go` | Catch panics, log stack trace, trả HTTP 500 |
+| 2 | `shared/middleware/logging.go` | Inject trace_id (UUID), log request/response, duration |
+| 3 | `shared/metrics/middleware.go` | Record `http_requests_total`, `http_request_duration_seconds` |
+| 4 | `shared/auth/middleware.go` | Verify JWT token |
+| 5 | `adapters/http/handler.go` | Business endpoint (per BC) |
 
 **Prometheus Metrics:**
 
@@ -522,7 +767,7 @@ HTTP Request → middleware/ → handler/ → service/ → repository/ → Postg
   "status": 201,
   "duration_ms": 45,
   "message": "request completed",
-  "caller": "handler/order.go:42"
+  "caller": "adapters/http/handler.go:42"
 }
 ```
 
@@ -628,9 +873,24 @@ input { kafka { topic: "logs-raw" } }
 
 ## 10. Architecture Decisions
 
-### ADR 001: Layered Architecture
+### ADR 001: Clean Architecture + DDD + CQRS (thay thế Layered Architecture)
 
-Go services dùng Layered Architecture (middleware → handler → service → repository) thay vì DDD thuần. Domain observability đơn giản, không cần aggregate roots hay domain events.
+**Status:** Supersedes original ADR 001 (Layered Architecture)
+
+**Context:** Ban đầu chọn Layered Architecture đơn giản (middleware → handler → service → repository) vì cho rằng domain observability đơn giản. Tuy nhiên, khi phân tích sâu các yêu cầu của alerting (threshold, inhibition, routing, escalation), SLO (error budget calculation, burn rate), và log pipeline management (mode switching, DLQ retry) — đây là **real business logic**, không phải CRUD.
+
+**Decision:**
+- **`order/`, `user/`**: Clean Architecture (domain → app → ports → adapters). Domain đơn giản, không cần CQRS hay Domain Events.
+- **`alerting/`, `slo/`, `logpipeline/`**: Clean Architecture + DDD + CQRS. Command/Query split cho read-heavy monitoring use cases. Domain Events cho cross-BC communication.
+- **Layer rule**: `adapters → ports ← app → domain` (strict, one-way). Domain không import ngoài stdlib.
+
+**Consequences:**
+- (+) Domain logic testable không cần Docker/database (dùng in-memory adapters)
+- (+) CQRS cho phép tối ưu read side riêng biệt (cache, materialized views) — phù hợp monitoring (read:write ~ 100:1)
+- (+) Domain Events loose coupling giữa BCs — thêm notification channel không sửa alerting domain
+- (+) Swap infrastructure dễ (Prometheus → VictoriaMetrics, Slack → PagerDuty) chỉ thêm adapter mới
+- (-) Overhead: nhiều files hơn, cần discipline để maintain layer boundaries
+- (-) Learning curve cho developers chưa quen DDD/CQRS
 
 ### ADR 002: Kafka làm Log Buffer
 
@@ -655,6 +915,30 @@ Mỗi infrastructure component có dedicated exporter riêng. Chạy sidecar tro
 ### ADR 007: 2 Deployment Modes
 
 Mode A (small, no Kafka) cho dev/staging. Mode B (with Kafka) cho production. Docker Compose profiles điều khiển: `--profile scale`.
+
+### ADR 008: CQRS cho Complex Bounded Contexts
+
+**Context:** Monitoring systems có read:write ratio cực kỳ lệch (~100:1). Write side (metrics ingestion, alert firing) cần consistency và business rule validation. Read side (dashboards, log search, alert history) cần speed và flexibility.
+
+**Decision:** Áp dụng CQRS cho `alerting/`, `slo/`, `logpipeline/`. Tách `app/command/` (write) và `app/query/` (read). Read side có thể dùng denormalized views, cache, hoặc read replicas mà không ảnh hưởng write side. KHÔNG áp dụng cho `order/`, `user/` vì read/write balanced và domain đơn giản.
+
+**Consequences:**
+- (+) Read side tối ưu riêng (cache active alerts, materialized SLO compliance views)
+- (+) Write side focus vào domain logic purity
+- (-) Eventual consistency giữa write và read models (chấp nhận được vì monitoring data inherently near-real-time)
+
+### ADR 009: Domain Events cho Cross-BC Communication
+
+**Context:** Khi alert firing, cần update SLO error budget, gửi notification, tạo incident. Direct coupling (alerting gọi SLO service trực tiếp) vi phạm BC boundaries và tạo circular dependency.
+
+**Decision:** Cross-BC communication qua in-process domain events (shared/eventbus). Event publisher interface trong ports/ của mỗi BC. Synchronous in-process bus cho MVP, có thể evolve sang async (Kafka/NATS) khi cần scale.
+
+**Consequences:**
+- (+) BCs hoàn toàn độc lập — thêm/xóa subscriber không sửa publisher
+- (+) Audit trail tự nhiên (log events)
+- (+) Dễ evolve sang async messaging khi cần
+- (-) Debugging event chains phức tạp hơn direct calls
+- (-) Eventual consistency (cho synchronous bus thì không có vấn đề này)
 
 ---
 
