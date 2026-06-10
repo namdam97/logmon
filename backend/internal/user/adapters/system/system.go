@@ -36,6 +36,14 @@ func (h *BcryptHasher) Hash(plain string) (string, error) {
 	return string(b), nil
 }
 
+// Verify trả về nil nếu plain khớp hash, ngược lại trả về lỗi so khớp.
+func (h *BcryptHasher) Verify(hash, plain string) error {
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain)); err != nil {
+		return fmt.Errorf("bcrypt compare: %w", err)
+	}
+	return nil
+}
+
 // UUIDGenerator sinh id dạng UUID v4.
 type UUIDGenerator struct{}
 

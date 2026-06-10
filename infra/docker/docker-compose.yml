@@ -29,6 +29,11 @@ services:
       PORT: "8080"
       LOG_LEVEL: info
       DATABASE_URL: postgres://logmon:logmon@postgres:5432/logmon?sslmode=disable
+      # JWT_SECRET nạp từ env của host; literal chỉ là fallback cho local dev.
+      # Production PHẢI set JWT_SECRET (secret manager), KHÔNG dùng giá trị này.
+      JWT_SECRET: ${JWT_SECRET:-local-dev-insecure-change-me}
+      COOKIE_SECURE: "false"
+      ALLOWED_ORIGIN: http://localhost:3000
     ports:
       - "8080:8080"
     depends_on:
