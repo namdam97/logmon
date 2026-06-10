@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/namdam/.claude/plugins/**)",
+      "Read(//home/namdam/.claude/rules/ecc/**)",
+      "Bash(go version *)",
+      "Bash(golangci-lint version *)"
+    ]
+  }
+}
