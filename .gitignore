@@ -1,0 +1,34 @@
+# Go
+/backend/bin/
+*.exe
+*.out
+*.test
+coverage.out
+coverage.html
+vendor/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
+
+# Claude local (machine-specific)
+.claude/settings.local.json
+
+# Docker volumes / data
+infra/**/data/
