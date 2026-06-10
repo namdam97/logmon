@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,12 +17,15 @@ import (
 
 const traceIDHeader = "X-Trace-Id"
 
-// TraceID gắn một trace_id cho mỗi request (lấy từ header nếu client gửi,
-// ngược lại sinh mới bằng crypto/rand) và đưa vào request context.
+// traceIDPattern: 32 ký tự hex (16 bytes) — khớp định dạng newTraceID sinh ra.
+var traceIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+
+// TraceID gắn một trace_id cho mỗi request. Chỉ tin trace_id client gửi nếu
+// đúng định dạng hex (chống log injection / pollution); ngược lại sinh mới.
 func TraceID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tid := c.GetHeader(traceIDHeader)
-		if tid == "" {
+		if !traceIDPattern.MatchString(tid) {
 			tid = newTraceID()
 		}
 		ctx := logger.ContextWithTraceID(c.Request.Context(), tid)
@@ -64,6 +68,26 @@ func Recovery(log *logger.Logger) gin.HandlerFunc {
 	})
 }
 
+// CORS cho phép một origin cụ thể gửi request kèm credentials (cookie). KHÔNG
+// dùng "*" cùng credentials — vi phạm bảo mật. allowedOrigin rỗng → tắt CORS.
+func CORS(allowedOrigin string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if allowedOrigin != "" && c.GetHeader("Origin") == allowedOrigin {
+			h := c.Writer.Header()
+			h.Set("Access-Control-Allow-Origin", allowedOrigin)
+			h.Set("Access-Control-Allow-Credentials", "true")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Content-Type")
+			h.Add("Vary", "Origin")
+		}
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
 // SecurityHeaders set các header bảo mật bắt buộc trên mọi response.
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -71,6 +95,8 @@ func SecurityHeaders() gin.HandlerFunc {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		// Service trả JSON, không serve HTML/script → khoá toàn bộ subresource.
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		c.Next()
 	}
 }

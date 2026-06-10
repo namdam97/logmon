@@ -13,6 +13,9 @@ var (
 	ErrUserNotFound = errors.New("user not found")
 	// ErrEmailTaken: email đã được đăng ký bởi user khác.
 	ErrEmailTaken = errors.New("email already taken")
+	// ErrInvalidCredentials: sai email hoặc mật khẩu khi đăng nhập. Dùng chung
+	// cho cả hai trường hợp để không lộ email nào tồn tại.
+	ErrInvalidCredentials = errors.New("invalid credentials")
 )
 
 // ValidationError mô tả input không hợp lệ trên một field. Suffix "Error" theo

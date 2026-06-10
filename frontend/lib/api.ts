@@ -24,6 +24,8 @@ export interface RegisterInput {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    // Gửi/nhận cookie auth (HttpOnly) cho mọi request qua biên origin.
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
 
@@ -41,6 +43,17 @@ export function registerUser(input: RegisterInput): Promise<User> {
   });
 }
 
-export function getUser(id: string): Promise<User> {
-  return request<User>(`/api/v1/users/${encodeURIComponent(id)}`);
+export type LoginInput = RegisterInput;
+
+// login đặt cookie HttpOnly phía server và trả về user vừa xác thực.
+export function login(input: LoginInput): Promise<User> {
+  return request<User>("/api/v1/auth/login", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+// me trả về user đang đăng nhập dựa trên cookie hiện tại.
+export function me(): Promise<User> {
+  return request<User>("/api/v1/me");
 }

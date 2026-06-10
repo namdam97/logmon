@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
 	"github.com/namdam97/logmon/backend/internal/shared/middleware"
@@ -31,6 +32,9 @@ const (
 	_shutdownTimeout   = 10 * time.Second
 	_readHeaderTimeout = 5 * time.Second
 	_dbConnectTimeout  = 10 * time.Second
+	_defaultJWTTTL     = 24 * time.Hour
+	_authRatePerMinute = 10 // giới hạn login/register mỗi IP
+	_authRateBurst     = 5
 )
 
 func main() {
@@ -41,19 +45,25 @@ func main() {
 }
 
 type config struct {
-	port        string
-	databaseURL string
-	logLevel    string
-	bcryptCost  int
+	port          string
+	databaseURL   string
+	logLevel      string
+	bcryptCost    int
+	jwtSecret     string
+	cookieSecure  bool
+	allowedOrigin string
 }
 
 func loadConfig() config {
 	cost, _ := strconv.Atoi(os.Getenv("BCRYPT_COST"))
 	return config{
-		port:        envOr("PORT", _defaultPort),
-		databaseURL: os.Getenv("DATABASE_URL"),
-		logLevel:    envOr("LOG_LEVEL", "info"),
-		bcryptCost:  cost,
+		port:          envOr("PORT", _defaultPort),
+		databaseURL:   os.Getenv("DATABASE_URL"),
+		logLevel:      envOr("LOG_LEVEL", "info"),
+		bcryptCost:    cost,
+		jwtSecret:     os.Getenv("JWT_SECRET"),
+		cookieSecure:  envOr("COOKIE_SECURE", "true") != "false",
+		allowedOrigin: os.Getenv("ALLOWED_ORIGIN"),
 	}
 }
 
@@ -63,6 +73,15 @@ func run() error {
 
 	if cfg.databaseURL == "" {
 		return errors.New("DATABASE_URL not configured")
+	}
+
+	jwtSvc, err := auth.NewJWTService(cfg.jwtSecret, _defaultJWTTTL)
+	if err != nil {
+		return fmt.Errorf("init jwt: %w", err)
+	}
+
+	if !cfg.cookieSecure {
+		log.Info(context.Background(), "WARNING: COOKIE_SECURE=false — chỉ dùng cho local dev, KHÔNG dùng production")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -85,9 +104,10 @@ func run() error {
 		usersys.NewBcryptHasher(cfg.bcryptCost),
 		usersys.NewUUIDGenerator(),
 		usersys.NewClock(),
+		jwtSvc,
 	)
 
-	router := buildRouter(log, mx, svc, pool)
+	router := buildRouter(log, mx, svc, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -123,12 +143,16 @@ func buildRouter(
 	mx *metrics.Metrics,
 	svc *userapp.Service,
 	pool *pgxpool.Pool,
+	jwtSvc *auth.JWTService,
+	cookieSecure bool,
+	allowedOrigin string,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(
 		middleware.Recovery(log),
 		middleware.TraceID(),
+		middleware.CORS(allowedOrigin),
 		middleware.SecurityHeaders(),
 		middleware.Metrics(mx),
 		middleware.Logging(log),
@@ -146,7 +170,12 @@ func buildRouter(
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(mx.Registry(), promhttp.HandlerOpts{})))
 
 	api := r.Group("/api/v1")
-	userhttp.NewHandler(svc).Register(api)
+	handler := userhttp.NewHandler(svc, userhttp.CookieConfig{
+		Secure:        cookieSecure,
+		MaxAgeSeconds: int(_defaultJWTTTL.Seconds()),
+	})
+	authRate := middleware.NewPerMinuteLimiter(_authRatePerMinute, _authRateBurst)
+	handler.Register(api, auth.RequireAuth(jwtSvc), authRate.Middleware())
 	return r
 }
 

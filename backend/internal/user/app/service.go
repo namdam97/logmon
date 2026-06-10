@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/namdam97/logmon/backend/internal/user/domain"
@@ -16,6 +17,7 @@ type Service struct {
 	hasher ports.PasswordHasher
 	ids    ports.IDGenerator
 	clock  ports.Clock
+	tokens ports.TokenIssuer
 }
 
 // NewService tạo Service với các dependency bắt buộc (accept interfaces).
@@ -24,8 +26,9 @@ func NewService(
 	hasher ports.PasswordHasher,
 	ids ports.IDGenerator,
 	clock ports.Clock,
+	tokens ports.TokenIssuer,
 ) *Service {
-	return &Service{repo: repo, hasher: hasher, ids: ids, clock: clock}
+	return &Service{repo: repo, hasher: hasher, ids: ids, clock: clock, tokens: tokens}
 }
 
 // RegisterInput là dữ liệu vào cho use case đăng ký user.
@@ -69,6 +72,40 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (domain.User, 
 		return domain.User{}, fmt.Errorf("save user: %w", err)
 	}
 	return user, nil
+}
+
+// LoginInput là dữ liệu vào cho use case đăng nhập.
+type LoginInput struct {
+	Email    string
+	Password string
+}
+
+// Login xác thực credentials và phát hành access token. Mọi nhánh thất bại
+// (email sai định dạng, không tồn tại, sai mật khẩu) đều trả về
+// domain.ErrInvalidCredentials để không lộ thông tin user nào tồn tại.
+func (s *Service) Login(ctx context.Context, in LoginInput) (domain.User, string, error) {
+	email, err := domain.NewEmail(in.Email)
+	if err != nil {
+		return domain.User{}, "", domain.ErrInvalidCredentials
+	}
+
+	user, err := s.repo.ByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, domain.ErrUserNotFound) {
+			return domain.User{}, "", domain.ErrInvalidCredentials
+		}
+		return domain.User{}, "", fmt.Errorf("find user by email: %w", err)
+	}
+
+	if err := s.hasher.Verify(user.PasswordHash(), in.Password); err != nil {
+		return domain.User{}, "", domain.ErrInvalidCredentials
+	}
+
+	token, err := s.tokens.Issue(user.ID().String())
+	if err != nil {
+		return domain.User{}, "", fmt.Errorf("issue token: %w", err)
+	}
+	return user, token, nil
 }
 
 // Get lấy user theo id. Trả về domain.ErrUserNotFound nếu không tồn tại.

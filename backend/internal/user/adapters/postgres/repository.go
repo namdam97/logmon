@@ -53,6 +53,19 @@ func (r *Repository) ByID(ctx context.Context, id domain.UserID) (domain.User, e
 	           FROM users WHERE id = $1`
 	row := r.pool.QueryRow(ctx, q, id.String())
 
+	return r.scanOne(row)
+}
+
+// ByEmail lấy user theo email. Trả về domain.ErrUserNotFound nếu không có.
+func (r *Repository) ByEmail(ctx context.Context, email domain.Email) (domain.User, error) {
+	const q = `SELECT id, email, password_hash, created_at
+	           FROM users WHERE email = $1`
+	row := r.pool.QueryRow(ctx, q, email.String())
+	return r.scanOne(row)
+}
+
+// scanOne map một row sang domain.User, xử lý trường hợp không có dòng.
+func (r *Repository) scanOne(row pgx.Row) (domain.User, error) {
 	var rawID, rawEmail, hash string
 	var createdAt time.Time
 	if err := row.Scan(&rawID, &rawEmail, &hash, &createdAt); err != nil {
