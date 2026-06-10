@@ -33,7 +33,7 @@ const (
 	_readHeaderTimeout = 5 * time.Second
 	_dbConnectTimeout  = 10 * time.Second
 	_defaultJWTTTL     = 24 * time.Hour
-	_authRatePerMinute = 10 // giới hạn login/register mỗi IP
+	_authRatePerMinute = 10 // mặc định: giới hạn login/register mỗi IP
 	_authRateBurst     = 5
 )
 
@@ -45,26 +45,38 @@ func main() {
 }
 
 type config struct {
-	port          string
-	databaseURL   string
-	logLevel      string
-	bcryptCost    int
-	jwtSecret     string
-	cookieSecure  bool
-	allowedOrigin string
+	port           string
+	databaseURL    string
+	logLevel       string
+	bcryptCost     int
+	jwtSecret      string
+	cookieSecure   bool
+	allowedOrigin  string
+	authRatePerMin int
+	authRateBurst  int
 }
 
 func loadConfig() config {
 	cost, _ := strconv.Atoi(os.Getenv("BCRYPT_COST"))
 	return config{
-		port:          envOr("PORT", _defaultPort),
-		databaseURL:   os.Getenv("DATABASE_URL"),
-		logLevel:      envOr("LOG_LEVEL", "info"),
-		bcryptCost:    cost,
-		jwtSecret:     os.Getenv("JWT_SECRET"),
-		cookieSecure:  envOr("COOKIE_SECURE", "true") != "false",
-		allowedOrigin: os.Getenv("ALLOWED_ORIGIN"),
+		port:           envOr("PORT", _defaultPort),
+		databaseURL:    os.Getenv("DATABASE_URL"),
+		logLevel:       envOr("LOG_LEVEL", "info"),
+		bcryptCost:     cost,
+		jwtSecret:      os.Getenv("JWT_SECRET"),
+		cookieSecure:   envOr("COOKIE_SECURE", "true") != "false",
+		allowedOrigin:  os.Getenv("ALLOWED_ORIGIN"),
+		authRatePerMin: envIntOr("AUTH_RATE_PER_MINUTE", _authRatePerMinute),
+		authRateBurst:  envIntOr("AUTH_RATE_BURST", _authRateBurst),
 	}
+}
+
+// envIntOr đọc một biến môi trường số nguyên dương; rỗng/không hợp lệ → fallback.
+func envIntOr(key string, fallback int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
+		return v
+	}
+	return fallback
 }
 
 func run() error {
@@ -107,7 +119,8 @@ func run() error {
 		jwtSvc,
 	)
 
-	router := buildRouter(log, mx, svc, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin)
+	router := buildRouter(log, mx, svc, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
+		cfg.authRatePerMin, cfg.authRateBurst)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -146,6 +159,7 @@ func buildRouter(
 	jwtSvc *auth.JWTService,
 	cookieSecure bool,
 	allowedOrigin string,
+	authRatePerMin, authRateBurst int,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -174,7 +188,7 @@ func buildRouter(
 		Secure:        cookieSecure,
 		MaxAgeSeconds: int(_defaultJWTTTL.Seconds()),
 	})
-	authRate := middleware.NewPerMinuteLimiter(_authRatePerMinute, _authRateBurst)
+	authRate := middleware.NewPerMinuteLimiter(authRatePerMin, authRateBurst)
 	handler.Register(api, auth.RequireAuth(jwtSvc), authRate.Middleware())
 	return r
 }

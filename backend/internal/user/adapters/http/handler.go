@@ -44,6 +44,7 @@ func NewHandler(svc *app.Service, cookie CookieConfig) *Handler {
 func (h *Handler) Register(rg *gin.RouterGroup, authMW, rateMW gin.HandlerFunc) {
 	rg.POST("/users", rateMW, h.register)
 	rg.POST("/auth/login", rateMW, h.login)
+	rg.POST("/auth/logout", h.logout)
 	rg.GET("/users/:id", authMW, h.get)
 	rg.GET("/me", authMW, h.me)
 }
@@ -118,6 +119,15 @@ func (h *Handler) login(c *gin.Context) {
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(auth.CookieName, token, h.cookie.MaxAgeSeconds, "/", "", h.cookie.Secure, true)
 	httpx.OK(c, http.StatusOK, toResponse(user))
+}
+
+// logout huỷ cookie phiên (JWT stateless: không có state server để xoá). Idempotent
+// — không yêu cầu đăng nhập, gọi nhiều lần vô hại.
+func (h *Handler) logout(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	// maxAge < 0 → trình duyệt xoá cookie ngay.
+	c.SetCookie(auth.CookieName, "", -1, "/", "", h.cookie.Secure, true)
+	httpx.OK(c, http.StatusOK, gin.H{"loggedOut": true})
 }
 
 func (h *Handler) get(c *gin.Context) {

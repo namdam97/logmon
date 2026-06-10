@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { Activity, Bell, Gauge, LogOut, User } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { logout as apiLogout } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
@@ -16,10 +17,14 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Logout thật cần endpoint backend xoá cookie HttpOnly (chưa có) — tạm điều
-  // hướng về /login; cookie sẽ hết hạn theo TTL. TODO: POST /auth/logout.
-  function logout() {
-    router.push("/login");
+  // Gọi backend xoá cookie HttpOnly rồi điều hướng về /login. Dù lỗi mạng vẫn
+  // điều hướng (tránh kẹt người dùng ở trạng thái nửa-vời).
+  async function logout() {
+    try {
+      await apiLogout();
+    } finally {
+      router.push("/login");
+    }
   }
 
   return (
