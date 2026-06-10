@@ -162,6 +162,15 @@ PipelineModeChanged → AlertingService.UpdatePipelineAlerts()
 - `doc/logmon.md` — Complete system specification
 - `doc/diagrams/*.mmd` — Mermaid architecture diagrams
 
+## Frontend Design Skills
+
+- **`taste-skill`** (vendored, MIT — `.claude/skills/taste-skill/`): anti-slop frontend taste cho
+  **landing / marketing / portfolio / redesign**. Theo phạm vi gốc của skill, **KHÔNG** dùng cho
+  dashboards / data tables / multi-step product UI. Chỉ invoke khi làm việc thiết kế FE (file 87KB,
+  không để always-on). Provenance: `.claude/skills/taste-skill/SOURCE.md`.
+- **Admin dashboard data-table** (phần chính của LogMon): ưu tiên `ecc:dashboard-builder` +
+  `ecc:design-system` + shadcn/ui; review bằng `ecc:react-reviewer` + `ecc:a11y-architect`.
+
 ## Language
 
 Project documentation is in Vietnamese. Respond and interact in Vietnamese.
