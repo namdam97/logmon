@@ -77,9 +77,11 @@ route:
       repeat_interval: 12h
 
 inhibit_rules:
+  # Critical đè MỌI warning cùng service (equal theo service, không theo
+  # alertname — critical ServiceDown phải nén được warning HighLatencyP95).
   - source_matchers: [severity = "critical"]
     target_matchers: [severity = "warning"]
-    equal: [alertname, service]
+    equal: [service]
 
 receivers:
   - name: page

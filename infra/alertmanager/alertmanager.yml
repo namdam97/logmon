@@ -1,0 +1,56 @@
+# Alertmanager config (doc_v2/05 §2) — routing theo severity, inhibition,
+# Watchdog deadman switch. Secrets qua *_file (compose secrets, KHÔNG hardcode).
+# GĐ2 sẽ thêm receiver `logmon` (webhook → alerting BC) với continue: true.
+
+route:
+  group_by: [alertname, service]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: slack-default
+  routes:
+    # Deadman switch — route riêng, KHÔNG gom nhóm, ping liên tục ~50s
+    # tới healthchecks.io (ADR-026). Ping ngừng = pipeline alerting chết.
+    - matchers: ['alertname = "Watchdog"']
+      receiver: deadman
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 50s
+    - matchers: ['severity = "critical"']
+      receiver: page
+      group_wait: 10s
+      repeat_interval: 1h
+    - matchers: ['severity = "warning"']
+      receiver: ticket
+      repeat_interval: 12h
+
+# Critical đè warning CÙNG service (tránh alert storm khi service sập).
+inhibit_rules:
+  - source_matchers: ['severity = "critical"']
+    target_matchers: ['severity = "warning"']
+    equal: [service]
+
+receivers:
+  - name: page
+    slack_configs:
+      - api_url_file: /run/secrets/slack_webhook_url
+        channel: '#alerts-critical'
+        send_resolved: true
+
+  - name: ticket
+    slack_configs:
+      - api_url_file: /run/secrets/slack_webhook_url
+        channel: '#alerts'
+        send_resolved: true
+
+  - name: slack-default
+    slack_configs:
+      - api_url_file: /run/secrets/slack_webhook_url
+        channel: '#alerts'
+        send_resolved: true
+
+  - name: deadman
+    webhook_configs:
+      - url_file: /run/secrets/healthchecks_url
+        send_resolved: false
+        max_alerts: 1
