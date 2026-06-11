@@ -97,10 +97,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: promtool check config + rules
+      - name: promtool check config
         run: |
           docker run --rm -v "$PWD/infra/prometheus:/cfg:ro" --entrypoint promtool \
             prom/prometheus:v3.12.0 check config /cfg/prometheus.yml
+      # check config KHÔNG resolve được rule_files (đường dẫn tuyệt đối trong
+      # container) — phải check rules tường minh từng file.
+      - name: promtool check rules
+        run: |
+          for f in infra/prometheus/rules/*.yml; do
+            docker run --rm -v "$PWD/infra/prometheus/rules:/rules:ro" --entrypoint promtool \
+              prom/prometheus:v3.12.0 check rules "/rules/$(basename "$f")"
+          done
       - name: docker compose config
         run: docker compose -f infra/docker/docker-compose.yml config -q
 

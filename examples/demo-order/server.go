@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,9 +26,11 @@ type createOrderRequest struct {
 
 // appServer gom router, logger, metrics, chaos và dữ liệu in-memory.
 type appServer struct {
-	log    *serviceLogger
-	mx     *appMetrics
-	chaos  *chaos
+	log   *serviceLogger
+	mx    *appMetrics
+	chaos *chaos
+
+	mu     sync.RWMutex // bảo vệ orders — Gin xử lý request trên nhiều goroutine
 	orders []order
 }
 
@@ -68,9 +71,14 @@ func (s *appServer) handleHealthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// handleListOrders trả danh sách orders in-memory.
+// handleListOrders trả danh sách orders in-memory. Trả về bản copy để caller
+// không giữ reference vào slice nội bộ (copy tại API boundary).
 func (s *appServer) handleListOrders(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"orders": s.orders})
+	s.mu.RLock()
+	result := make([]order, len(s.orders))
+	copy(result, s.orders)
+	s.mu.RUnlock()
+	c.JSON(http.StatusOK, gin.H{"orders": result})
 }
 
 // handleCreateOrder validate body rồi tạo order mới.
@@ -86,7 +94,9 @@ func (s *appServer) handleCreateOrder(c *gin.Context) {
 		Item:     req.Item,
 		Quantity: req.Quantity,
 	}
+	s.mu.Lock()
 	s.orders = append(s.orders, newOrder)
+	s.mu.Unlock()
 	c.JSON(http.StatusCreated, newOrder)
 }
 

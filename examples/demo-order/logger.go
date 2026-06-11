@@ -15,6 +15,12 @@ type serviceLogger struct {
 	zl zerolog.Logger
 }
 
+// init đặt format timestamp toàn cục của zerolog đúng một lần lúc khởi tạo
+// package — KHÔNG đặt trong newLogger để tránh mutate global state mỗi lần gọi.
+func init() {
+	zerolog.TimeFieldFormat = time.RFC3339 // ISO8601 UTC theo spec
+}
+
 // newLogger tạo serviceLogger ghi ra w với level cho trước.
 // level rỗng/không hợp lệ → info.
 func newLogger(w io.Writer, level string) *serviceLogger {
@@ -25,8 +31,6 @@ func newLogger(w io.Writer, level string) *serviceLogger {
 	if err != nil || level == "" {
 		lvl = zerolog.InfoLevel
 	}
-	// Timestamp ISO8601 UTC theo spec.
-	zerolog.TimeFieldFormat = time.RFC3339
 	zl := zerolog.New(w).
 		Level(lvl).
 		With().

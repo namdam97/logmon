@@ -8,7 +8,8 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: logmon
-      POSTGRES_PASSWORD: logmon
+      # Fallback chỉ cho local dev — staging/production PHẢI set POSTGRES_PASSWORD.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logmon}
       POSTGRES_DB: logmon
     ports:
       - "5432:5432"
@@ -26,10 +27,17 @@ services:
     build:
       context: ../../backend
       dockerfile: Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     environment:
       PORT: "8080"
       LOG_LEVEL: info
-      DATABASE_URL: postgres://logmon:logmon@postgres:5432/logmon?sslmode=disable
+      DATABASE_URL: postgres://logmon:${POSTGRES_PASSWORD:-logmon}@postgres:5432/logmon?sslmode=disable
       # JWT_SECRET nạp từ env của host; literal chỉ là fallback cho local dev.
       # Production PHẢI set JWT_SECRET (secret manager), KHÔNG dùng giá trị này.
       JWT_SECRET: ${JWT_SECRET:-local-dev-insecure-change-me}
@@ -160,7 +168,7 @@ services:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.18.1
     restart: unless-stopped
     environment:
-      DATA_SOURCE_NAME: postgresql://logmon:logmon@postgres:5432/logmon?sslmode=disable
+      DATA_SOURCE_NAME: postgresql://logmon:${POSTGRES_PASSWORD:-logmon}@postgres:5432/logmon?sslmode=disable
     ports:
       - "9187:9187"
     depends_on:

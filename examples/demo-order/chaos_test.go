@@ -30,7 +30,7 @@ func TestChaos_ShouldError(t *testing.T) {
 			want:      true,
 		},
 		{
-			give:      "errorRate=0.99, rand=0.999 → true",
+			give:      "errorRate=0.99, rand=0.999 → false (0.999 >= 0.99)",
 			errorRate: 0.99,
 			randVal:   0.999,
 			want:      false,

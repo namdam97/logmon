@@ -36,7 +36,9 @@ groups:
           runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/HighLatencyP95
 
       - alert: PGConnHigh
-        expr: pg_stat_activity_count / pg_settings_max_connections > 0.8
+        # sum() vì pg_stat_activity_count tách series theo {datname, state};
+        # scalar() vì single-instance Postgres (revisit khi có nhiều instance).
+        expr: sum(pg_stat_activity_count) / scalar(pg_settings_max_connections) > 0.8
         for: 5m
         labels:
           severity: warning
@@ -45,6 +47,8 @@ groups:
           runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/PGConnHigh
 
       - alert: Watchdog
+        # KHÔNG có 'for:' là CỐ Ý — deadman switch phải firing liên tục
+        # (doc_v2/05 §5, ADR-026). Thêm 'for:' sẽ phá chức năng này.
         expr: vector(1)
         labels:
           severity: none
