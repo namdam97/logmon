@@ -153,6 +153,8 @@ services:
       # Production PHẢI set GRAFANA_ADMIN_PASSWORD qua env/secret.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin-change-me}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Cho ES datasource provisioning ($__env trong datasources.yml).
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
     volumes:
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
       - ../grafana/dashboards:/var/lib/grafana/dashboards:ro

@@ -8,3 +8,21 @@ datasources:
     access: proxy
     isDefault: true
     editable: false
+
+  # Logs (doc_v2/03): data streams logs-*, doc shape OTel-native.
+  # Password lấy từ env ELASTIC_PASSWORD của container Grafana.
+  - name: Elasticsearch
+    type: elasticsearch
+    uid: elasticsearch
+    url: http://elasticsearch:9200
+    access: proxy
+    basicAuth: true
+    basicAuthUser: elastic
+    secureJsonData:
+      basicAuthPassword: $__env{ELASTIC_PASSWORD}
+    jsonData:
+      index: "logs-*"
+      timeField: "@timestamp"
+      logMessageField: body.text
+      logLevelField: severity_text
+    editable: false

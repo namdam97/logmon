@@ -1,0 +1,101 @@
+{
+  "uid": "logmon-pipeline-health",
+  "title": "LogMon — Pipeline Health",
+  "tags": ["logmon", "pipeline", "meta-monitoring"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Collector: log records nhận / gửi (per giây)",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (instance) (rate(otelcol_receiver_accepted_log_records[5m]))", "legendFormat": "accepted {{instance}}" },
+        { "refId": "B", "expr": "sum by (instance) (rate(otelcol_exporter_sent_log_records[5m]))", "legendFormat": "sent {{instance}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Collector: send FAILED (phải = 0)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 20 } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (instance) (rate(otelcol_exporter_send_failed_log_records[5m]))", "legendFormat": "failed {{instance}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Exporter queue: size / capacity",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "otelcol_exporter_queue_size", "legendFormat": "size {{instance}}" },
+        { "refId": "B", "expr": "otelcol_exporter_queue_capacity", "legendFormat": "capacity {{instance}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Elasticsearch: indexing rate (docs/s)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "rate(elasticsearch_indices_indexing_index_total[5m])", "legendFormat": "index ops {{name}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "gauge",
+      "title": "ES disk used %",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.7 },
+            { "color": "red", "value": 0.8 }
+          ] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Targets up / tổng",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "count(up == 1)", "legendFormat": "up" },
+        { "refId": "B", "expr": "count(up)", "legendFormat": "total" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Alertmanager: notifications gửi / fail",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (integration) (rate(alertmanager_notifications_total[5m]))", "legendFormat": "sent {{integration}}" },
+        { "refId": "B", "expr": "sum by (integration) (rate(alertmanager_notifications_failed_total[5m]))", "legendFormat": "failed {{integration}}" }
+      ]
+    }
+  ]
+}
