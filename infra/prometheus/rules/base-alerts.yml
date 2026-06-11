@@ -46,6 +46,26 @@ groups:
           summary: "PostgreSQL connection usage > 80% ({{ $value | humanizePercentage }})"
           runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/PGConnHigh
 
+      - alert: ESDiskHigh
+        expr: >
+          (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes)
+          > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elasticsearch disk usage > 80% on {{ $labels.name }}"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/ESDiskHigh
+
+      - alert: CollectorQueueFull
+        expr: otelcol_exporter_queue_size / otelcol_exporter_queue_capacity > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OTel Collector exporter queue > 80% — nguy cơ drop logs ({{ $labels.instance }})"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/CollectorQueueFull
+
       - alert: Watchdog
         # KHÔNG có 'for:' là CỐ Ý — deadman switch phải firing liên tục
         # (doc_v2/05 §5, ADR-026). Thêm 'for:' sẽ phá chức năng này.

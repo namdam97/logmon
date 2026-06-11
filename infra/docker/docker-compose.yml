@@ -179,7 +179,104 @@ services:
         limits:
           memory: 128m
 
+  # ── Logs pipeline Mode A (doc_v2/03, ADR-018/019): agent → gateway → ES ────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.2
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      # Auth BẬT (không tắt xpack.security — doc_v2/09 §6). TLS HTTP tắt cho
+      # dev Mode A trong network nội bộ; production bật qua compose.prod.
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -qE '(green|yellow)'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
+
+  # Bootstrap ILM policy + index template — one-shot, idempotent.
+  es-init:
+    image: curlimages/curl:8.14.1
+    restart: "no"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../elasticsearch:/init:ro
+    entrypoint: /bin/sh
+    command: ["/init/init.sh"]
+
+  otel-gateway:
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    restart: unless-stopped
+    # root để ghi persistent queue vào named volume (dev); prod hardening sau.
+    user: "0"
+    command: ["--config=/etc/otelcol/gateway.yaml"]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../otel/gateway.yaml:/etc/otelcol/gateway.yaml:ro
+      - otel-gateway-state:/var/lib/otelcol
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  otel-agent:
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    restart: unless-stopped
+    # root để đọc /var/lib/docker/containers (json-file logs mọi container).
+    user: "0"
+    command: ["--config=/etc/otelcol/agent.yaml"]
+    volumes:
+      - ../otel/agent.yaml:/etc/otelcol/agent.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otel-agent-state:/var/lib/otelcol
+    depends_on:
+      - otel-gateway
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  elasticsearch-exporter:
+    image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.9.0
+    restart: unless-stopped
+    command:
+      - '--es.uri=http://elastic:${ELASTIC_PASSWORD:-local-dev-insecure}@elasticsearch:9200'
+    ports:
+      - "9114:9114"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
 volumes:
   pgdata:
   promdata:
   grafanadata:
+  esdata:
+  otel-agent-state:
+  otel-gateway-state:

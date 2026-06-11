@@ -32,3 +32,15 @@ scrape_configs:
     scrape_interval: 60s
     static_configs:
       - targets: [grafana:3000]
+
+  - job_name: otel-collectors
+    scrape_interval: 60s
+    static_configs:
+      - targets:
+          - otel-agent:8888
+          - otel-gateway:8888
+
+  - job_name: elasticsearch
+    scrape_interval: 60s
+    static_configs:
+      - targets: [elasticsearch-exporter:9114]

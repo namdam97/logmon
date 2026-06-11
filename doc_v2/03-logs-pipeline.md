@@ -92,15 +92,18 @@ service:
 
 ```yaml
 exporters:
+  # OTel-native mapping mode (default). LƯU Ý: `mapping::mode: ecs` đã
+  # DEPRECATED + IGNORED từ exporter v0.154 — không dùng ECS mode nữa.
+  # Routing data stream theo attributes data_stream.* là hành vi mặc định.
   elasticsearch:
-    endpoints: ["https://elasticsearch:9200"]
-    auth: { authenticator: basicauth }
-    logs_dynamic_index:
-      enabled: true                 # route theo data_stream.* attributes
-    mapping: { mode: ecs }          # map sang ECS fields
-    retry: { enabled: true, max_requests: 5 }
+    endpoints: ["http://elasticsearch:9200"]   # TLS bật ở production override
+    user: elastic
+    password: ${env:ELASTIC_PASSWORD}
+    retry: { enabled: true }
     sending_queue: { enabled: true, storage: file_storage }  # persistent queue chống mất log khi ES down ngắn
 ```
+
+Doc shape OTel-native (đã verify trên ES 9.4): `@timestamp`, `severity_text`, `body.text`, `resource.attributes.*` (service.name...), `attributes.*` (level, method, path, status, duration_ms, trace_id...). Log Search API (mục 8) query theo các field này.
 
 Failure handling tại gateway: `sending_queue` (file-backed) giữ logs khi ES down ngắn hạn (Mode A); Mode B thì Kafka đã là buffer chính (collector chỉ cần queue nhỏ).
 
@@ -143,9 +146,13 @@ zerolog JSON stdout — fields bắt buộc:
 Theo chuẩn ES `{type}-{dataset}-{namespace}`:
 
 ```
-logs-{service}-{workspace}     ← ví dụ: logs-logmon.api-default, logs-demo.order-backend.team
-traces-jaeger-*                ← Jaeger v2 tự quản
+logs-{dataset}.otel-{namespace}   ← dataset = service.name (sanitize "-" → "_"),
+                                     suffix ".otel" do exporter OTel mode tự thêm
+                                     ví dụ thực tế: logs-demo_order.otel-default
+traces-jaeger-*                   ← Jaeger v2 tự quản
 ```
+
+- `namespace` = workspace slug (GĐ3); GĐ1-2 dùng `default`.
 
 - **KHÔNG còn date trong tên index.** Data stream tự quản backing indices (`.ds-logs-...-000001`).
 - Multi-tenant (GĐ3): **data-stream-per-workspace** qua namespace — đúng khuyến nghị cho 5-50 tenants; cho phép ILM/retention riêng từng workspace. Shared index + Document-Level Security chỉ cần khi hàng trăm tenants (và DLS yêu cầu license Platinum — nếu rẽ hướng đó, cân nhắc OpenSearch nơi DLS miễn phí).

@@ -1,0 +1,65 @@
+# OTel Collector GATEWAY (doc_v2/03 §2.2, ADR-018) — trung tâm.
+# Nhận OTLP từ agents → gắn data_stream attrs → Elasticsearch data streams.
+# GĐ2 thêm: tail_sampling + spanmetrics + Jaeger exporter.
+
+extensions:
+  # Persistent sending queue — không mất log khi ES down ngắn hạn (Mode A;
+  # Mode B thì Kafka là buffer chính).
+  file_storage:
+    directory: /var/lib/otelcol
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+  # Route data stream: logs-{service}-{namespace} (ADR-019).
+  # namespace = workspace ở GĐ3; GĐ1 dùng "default".
+  transform/datastream:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["data_stream.type"], "logs")
+          - set(attributes["data_stream.dataset"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil
+          - set(attributes["data_stream.dataset"], "docker") where attributes["data_stream.dataset"] == nil
+          - set(attributes["data_stream.namespace"], "default")
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # Dùng OTel-native mapping mode (default từ v0.154 — `mapping::mode: ecs` đã
+  # deprecated + ignored). Data stream: logs-{dataset}.otel-{namespace},
+  # dataset sanitize "-" → "_". Doc shape: severity_text, body.text,
+  # resource.attributes.*, attributes.* — template ES khớp shape này.
+  elasticsearch:
+    endpoints: ["http://elasticsearch:9200"]
+    user: elastic
+    password: ${env:ELASTIC_PASSWORD}
+    retry:
+      enabled: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+
+service:
+  extensions: [file_storage]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/datastream, batch]
+      exporters: [elasticsearch]
