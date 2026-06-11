@@ -1,5 +1,6 @@
-# LogMon dev stack (Mode A) — postgres + userservice. Mode B (Kafka, ELK) bổ
-# sung sau qua profile "scale".
+# LogMon dev stack (Mode A) — postgres + userservice + monitoring (Prometheus,
+# Grafana, exporters) + demo-order workload. Mode B (Kafka, ES cluster, Thanos)
+# bổ sung sau qua profile "scale". Loadgen bật qua profile "demo".
 name: logmon
 
 services:
@@ -40,5 +41,137 @@ services:
       postgres:
         condition: service_healthy
 
+  # ── Demo workload (ADR-029) — sinh telemetry cho dev/test platform ──────────
+  demo-order:
+    build:
+      context: ../../examples/demo-order
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      ERROR_RATE: "0.05"
+      EXTRA_LATENCY_MS: "200"
+      LOG_LEVEL: info
+    ports:
+      - "8081:8081"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # Sinh traffic liên tục vào demo-order: docker compose --profile demo up -d
+  loadgen:
+    profiles: [demo]
+    image: curlimages/curl:8.14.1
+    restart: unless-stopped
+    depends_on:
+      - demo-order
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        while true; do
+          curl -fsS -o /dev/null http://demo-order:8081/api/v1/orders || true
+          if [ $$((RANDOM % 5)) -eq 0 ]; then
+            curl -fsS -o /dev/null -X POST http://demo-order:8081/api/v1/orders \
+              -H 'Content-Type: application/json' \
+              -d '{"item":"laptop","quantity":2}' || true
+          fi
+          sleep 0.5
+        done
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
+  # ── Monitoring stack (doc_v2/04 + 05) ───────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      # Bắt buộc cho rule sync pipeline (ADR-024): POST /-/reload.
+      - --web.enable-lifecycle
+      # Exemplars: click datapoint → trace (doc_v2/04).
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules:/etc/prometheus/rules:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
+
+  grafana:
+    image: grafana/grafana:12.3.7
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Production PHẢI set GRAFANA_ADMIN_PASSWORD qua env/secret.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      # 3000 dành cho frontend dev (pnpm dev) — Grafana map ra 3001.
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.9.1
+    restart: unless-stopped
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - --path.rootfs=/host
+    ports:
+      - "9100:9100"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.18.1
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://logmon:logmon@postgres:5432/logmon?sslmode=disable
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
 volumes:
   pgdata:
+  promdata:
+  grafanadata:
