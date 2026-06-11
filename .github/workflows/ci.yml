@@ -1,0 +1,144 @@
+# CI pipeline LogMon — theo doc_v2/10 §3.
+# Gates: build + test (race) + lint v2 + govulncheck + gitleaks + validate configs.
+# Build images: build-only trên PR, push ghcr trên main.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — test + lint + vuln
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+      - name: Test (race + coverage)
+        working-directory: backend
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      # Hiện log coverage tổng; gate cứng ≥80% cho domain/app sẽ thêm bằng script
+      # khi có thêm BC (tránh fail vì package adapters chờ integration tests).
+      - name: Coverage report
+        working-directory: backend
+        run: go tool cover -func=coverage.out | tail -1
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          working-directory: backend
+      - name: govulncheck
+        working-directory: backend
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  demo-order:
+    name: Demo workload — test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/demo-order/go.mod
+          cache-dependency-path: examples/demo-order/go.sum
+      - name: Build + test + vet
+        working-directory: examples/demo-order
+        run: |
+          go build ./...
+          go test -race -cover ./...
+          go vet ./...
+
+  frontend:
+    name: Frontend — test + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # TODO: thêm `pnpm lint` khi có eslint config (hiện frontend chưa có).
+      - run: pnpm exec vitest run --passWithNoTests
+      - run: pnpm build
+
+  secrets-scan:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  validate-configs:
+    name: Validate Prometheus + Compose configs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check config + rules
+        run: |
+          docker run --rm -v "$PWD/infra/prometheus:/cfg:ro" --entrypoint promtool \
+            prom/prometheus:v3.12.0 check config /cfg/prometheus.yml
+      - name: docker compose config
+        run: docker compose -f infra/docker/docker-compose.yml config -q
+
+  build-images:
+    name: Build images
+    runs-on: ubuntu-latest
+    needs: [backend, frontend, demo-order]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-backend:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Demo-order image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./examples/demo-order
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-demo-order:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-demo-order:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
