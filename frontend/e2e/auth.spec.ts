@@ -61,3 +61,24 @@ test("đăng ký + login → dashboard → hồ sơ hiển thị email", async (
   await expect(page).toHaveURL(/\/profile$/);
   await expect(page.getByText(email)).toBeVisible();
 });
+
+test("đăng xuất → xoá phiên, quay lại /login", async ({ page, request }) => {
+  const email = `e2e-logout-${Date.now()}@example.com`;
+  const created = await request.post(`${API}/api/v1/users`, {
+    data: { email, password: PASSWORD },
+  });
+  expect(created.ok()).toBeTruthy();
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Mật khẩu").fill(PASSWORD);
+  await page.getByRole("button", { name: "Đăng nhập" }).click();
+  await expect(page.getByRole("heading", { name: "Tổng quan" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Đăng xuất" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+
+  // Phiên đã bị xoá → vào lại dashboard vẫn bị chặn về /login.
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/login$/);
+});

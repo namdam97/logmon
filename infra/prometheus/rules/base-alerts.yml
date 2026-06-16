@@ -1,0 +1,77 @@
+groups:
+  - name: logmon-base
+    rules:
+      - alert: ServiceDown
+        expr: up{job="logmon-services"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.instance }} (job={{ $labels.job }}) is down"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/ServiceDown
+
+      - alert: HighErrorRate
+        expr: >
+          sum by (job) (rate(logmon_http_requests_total{status=~"5.."}[5m]))
+          /
+          sum by (job) (rate(logmon_http_requests_total[5m]))
+          > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.job }} ({{ $value | humanizePercentage }})"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/HighErrorRate
+
+      - alert: HighLatencyP95
+        expr: >
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(logmon_http_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 latency > 1s on {{ $labels.job }} ({{ $value | humanizeDuration }})"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/HighLatencyP95
+
+      - alert: PGConnHigh
+        # sum() vì pg_stat_activity_count tách series theo {datname, state};
+        # scalar() vì single-instance Postgres (revisit khi có nhiều instance).
+        expr: sum(pg_stat_activity_count) / scalar(pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connection usage > 80% ({{ $value | humanizePercentage }})"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/PGConnHigh
+
+      - alert: ESDiskHigh
+        expr: >
+          (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes)
+          > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elasticsearch disk usage > 80% on {{ $labels.name }}"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/ESDiskHigh
+
+      - alert: CollectorQueueFull
+        expr: otelcol_exporter_queue_size / otelcol_exporter_queue_capacity > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OTel Collector exporter queue > 80% — nguy cơ drop logs ({{ $labels.instance }})"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/CollectorQueueFull
+
+      - alert: Watchdog
+        # KHÔNG có 'for:' là CỐ Ý — deadman switch phải firing liên tục
+        # (doc_v2/05 §5, ADR-026). Thêm 'for:' sẽ phá chức năng này.
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Watchdog — deadman switch; nếu alert này ngừng firing thì pipeline Prometheus→Alertmanager đã chết"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/Watchdog

@@ -1,0 +1,76 @@
+{
+  "uid": "logmon-logs-explorer",
+  "title": "LogMon — Logs Explorer",
+  "tags": ["logmon", "logs"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Log volume theo level",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+          "query": "",
+          "timeField": "@timestamp",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "terms", "field": "severity_text", "settings": { "size": "10", "order": "desc", "orderBy": "_count", "min_doc_count": "1" } },
+            { "id": "3", "type": "date_histogram", "field": "@timestamp", "settings": { "interval": "auto" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Log volume theo service",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+          "query": "",
+          "timeField": "@timestamp",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "terms", "field": "resource.attributes.service.name", "settings": { "size": "10", "order": "desc", "orderBy": "_count", "min_doc_count": "1" } },
+            { "id": "3", "type": "date_histogram", "field": "@timestamp", "settings": { "interval": "auto" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "logs",
+      "title": "Logs (mới nhất trước)",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 7 },
+      "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+          "query": "",
+          "timeField": "@timestamp",
+          "metrics": [{ "id": "1", "type": "logs", "settings": { "limit": "200" } }],
+          "bucketAggs": []
+        }
+      ]
+    }
+  ]
+}

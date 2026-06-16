@@ -175,6 +175,22 @@ func TestProtectedRoutes(t *testing.T) {
 	})
 }
 
+func TestLogoutClearsCookie(t *testing.T) {
+	r := newRouter(t)
+	reg := doJSON(t, r, http.MethodPost, "/api/v1/users", `{"email":"a@b.com","password":"password123"}`, nil)
+	require.Equal(t, http.StatusCreated, reg.Code)
+	login := doJSON(t, r, http.MethodPost, "/api/v1/auth/login", `{"email":"a@b.com","password":"password123"}`, nil)
+	require.NotNil(t, loginCookie(login))
+
+	w := doJSON(t, r, http.MethodPost, "/api/v1/auth/logout", "", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	cleared := loginCookie(w)
+	require.NotNil(t, cleared, "logout phải gửi Set-Cookie để xoá cookie")
+	require.Empty(t, cleared.Value)
+	require.True(t, cleared.MaxAge < 0, "cookie phải bị huỷ (MaxAge<0)")
+}
+
 func extractID(t *testing.T, w *httptest.ResponseRecorder) string {
 	t.Helper()
 	var env httpx.Envelope

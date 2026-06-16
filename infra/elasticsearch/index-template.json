@@ -1,0 +1,44 @@
+{
+  "index_patterns": ["logs-*"],
+  "data_stream": {},
+  "priority": 200,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.lifecycle.name": "logmon-logs"
+    },
+    "mappings": {
+      "dynamic_templates": [
+        {
+          "attributes_as_keyword": {
+            "path_match": "attributes.*",
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword", "ignore_above": 1024 }
+          }
+        },
+        {
+          "resource_attributes_as_keyword": {
+            "path_match": "resource.attributes.*",
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword", "ignore_above": 1024 }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp":    { "type": "date" },
+        "severity_text": { "type": "keyword" },
+        "trace_id":      { "type": "keyword" },
+        "span_id":       { "type": "keyword" },
+        "body":          { "properties": { "text": { "type": "match_only_text" } } },
+        "data_stream": {
+          "properties": {
+            "type":      { "type": "constant_keyword" },
+            "dataset":   { "type": "constant_keyword" },
+            "namespace": { "type": "constant_keyword" }
+          }
+        }
+      }
+    }
+  }
+}

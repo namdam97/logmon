@@ -57,3 +57,10 @@ export function login(input: LoginInput): Promise<User> {
 export function me(): Promise<User> {
   return request<User>("/api/v1/me");
 }
+
+// logout yêu cầu server xoá cookie phiên (HttpOnly nên client không tự xoá được).
+export function logout(): Promise<{ loggedOut: boolean }> {
+  return request<{ loggedOut: boolean }>("/api/v1/auth/logout", {
+    method: "POST",
+  });
+}

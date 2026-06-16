@@ -1,5 +1,6 @@
-# LogMon dev stack (Mode A) — postgres + userservice. Mode B (Kafka, ELK) bổ
-# sung sau qua profile "scale".
+# LogMon dev stack (Mode A) — postgres + userservice + monitoring (Prometheus,
+# Grafana, exporters) + demo-order workload. Mode B (Kafka, ES cluster, Thanos)
+# bổ sung sau qua profile "scale". Loadgen bật qua profile "demo".
 name: logmon
 
 services:
@@ -7,7 +8,8 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: logmon
-      POSTGRES_PASSWORD: logmon
+      # Fallback chỉ cho local dev — staging/production PHẢI set POSTGRES_PASSWORD.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logmon}
       POSTGRES_DB: logmon
     ports:
       - "5432:5432"
@@ -25,10 +27,17 @@ services:
     build:
       context: ../../backend
       dockerfile: Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     environment:
       PORT: "8080"
       LOG_LEVEL: info
-      DATABASE_URL: postgres://logmon:logmon@postgres:5432/logmon?sslmode=disable
+      DATABASE_URL: postgres://logmon:${POSTGRES_PASSWORD:-logmon}@postgres:5432/logmon?sslmode=disable
       # JWT_SECRET nạp từ env của host; literal chỉ là fallback cho local dev.
       # Production PHẢI set JWT_SECRET (secret manager), KHÔNG dùng giá trị này.
       JWT_SECRET: ${JWT_SECRET:-local-dev-insecure-change-me}
@@ -40,5 +49,271 @@ services:
       postgres:
         condition: service_healthy
 
+  # ── Demo workload (ADR-029) — sinh telemetry cho dev/test platform ──────────
+  demo-order:
+    build:
+      context: ../../examples/demo-order
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      ERROR_RATE: "0.05"
+      EXTRA_LATENCY_MS: "200"
+      LOG_LEVEL: info
+    ports:
+      - "8081:8081"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # Sinh traffic liên tục vào demo-order: docker compose --profile demo up -d
+  loadgen:
+    profiles: [demo]
+    image: curlimages/curl:8.14.1
+    restart: unless-stopped
+    depends_on:
+      - demo-order
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        while true; do
+          curl -fsS -o /dev/null http://demo-order:8081/api/v1/orders || true
+          if [ $$((RANDOM % 5)) -eq 0 ]; then
+            curl -fsS -o /dev/null -X POST http://demo-order:8081/api/v1/orders \
+              -H 'Content-Type: application/json' \
+              -d '{"item":"laptop","quantity":2}' || true
+          fi
+          sleep 0.5
+        done
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
+  # ── Monitoring stack (doc_v2/04 + 05) ───────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      # Bắt buộc cho rule sync pipeline (ADR-024): POST /-/reload.
+      - --web.enable-lifecycle
+      # Exemplars: click datapoint → trace (doc_v2/04).
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules:/etc/prometheus/rules:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
+
+  alertmanager:
+    image: prom/alertmanager:v0.32.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ../alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - amdata:/alertmanager
+    secrets:
+      - slack_webhook_url
+      - healthchecks_url
+    ports:
+      - "9093:9093"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  grafana:
+    image: grafana/grafana:12.3.7
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Production PHẢI set GRAFANA_ADMIN_PASSWORD qua env/secret.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Cho ES datasource provisioning ($__env trong datasources.yml).
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      # 3000 dành cho frontend dev (pnpm dev) — Grafana map ra 3001.
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.9.1
+    restart: unless-stopped
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - --path.rootfs=/host
+    ports:
+      - "9100:9100"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.18.1
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://logmon:${POSTGRES_PASSWORD:-logmon}@postgres:5432/logmon?sslmode=disable
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # ── Logs pipeline Mode A (doc_v2/03, ADR-018/019): agent → gateway → ES ────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.2
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      # Auth BẬT (không tắt xpack.security — doc_v2/09 §6). TLS HTTP tắt cho
+      # dev Mode A trong network nội bộ; production bật qua compose.prod.
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -qE '(green|yellow)'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
+
+  # Bootstrap ILM policy + index template — one-shot, idempotent.
+  es-init:
+    image: curlimages/curl:8.14.1
+    restart: "no"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../elasticsearch:/init:ro
+    entrypoint: /bin/sh
+    command: ["/init/init.sh"]
+
+  otel-gateway:
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    restart: unless-stopped
+    # root để ghi persistent queue vào named volume (dev); prod hardening sau.
+    user: "0"
+    command: ["--config=/etc/otelcol/gateway.yaml"]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../otel/gateway.yaml:/etc/otelcol/gateway.yaml:ro
+      - otel-gateway-state:/var/lib/otelcol
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  otel-agent:
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    restart: unless-stopped
+    # root để đọc /var/lib/docker/containers (json-file logs mọi container).
+    user: "0"
+    command: ["--config=/etc/otelcol/agent.yaml"]
+    volumes:
+      - ../otel/agent.yaml:/etc/otelcol/agent.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otel-agent-state:/var/lib/otelcol
+    depends_on:
+      - otel-gateway
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  elasticsearch-exporter:
+    image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.9.0
+    restart: unless-stopped
+    command:
+      - '--es.uri=http://elastic:${ELASTIC_PASSWORD:-local-dev-insecure}@elasticsearch:9200'
+    ports:
+      - "9114:9114"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
 volumes:
   pgdata:
+  promdata:
+  grafanadata:
+  esdata:
+  otel-agent-state:
+  otel-gateway-state:
+  amdata:
+
+# Secrets file-based (doc_v2/10 §1) — copy từ *.example và điền URL thật:
+#   cp secrets/slack_webhook_url.txt.example secrets/slack_webhook_url.txt
+#   cp secrets/healthchecks_url.txt.example secrets/healthchecks_url.txt
+secrets:
+  slack_webhook_url:
+    file: ./secrets/slack_webhook_url.txt
+  healthchecks_url:
+    file: ./secrets/healthchecks_url.txt
