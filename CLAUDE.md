@@ -9,7 +9,7 @@ LogMon là nền tảng observability (logging + monitoring) cho Go microservice
 - **Clean Architecture** — cho `order` và `user` services (CRUD-like, domain đơn giản)
 - **Clean Architecture + DDD + CQRS** — cho `alerting`, `slo`, `logpipeline` (business logic phức tạp)
 
-Tài liệu chi tiết: `doc/logmon.md` (1200+ lines) + 10 Mermaid diagrams trong `doc/diagrams/`.
+Tài liệu chi tiết: `doc_v2/` — 14 file thiết kế (00-tong-quan → 13-adr), là source of truth.
 
 ## Tech Stack
 
@@ -43,9 +43,6 @@ make down            # dừng (down-v để xoá volume)
 # Trực tiếp (khi cần)
 cd backend && go build ./... && go test -race ./... && golangci-lint run
 cd frontend && pnpm install && pnpm build && pnpm test
-
-# Mermaid diagrams
-mmdc -i doc/diagrams/<file>.mmd -o doc/diagrams/<file>.png
 ```
 
 ## Architecture Rules (MUST FOLLOW)
@@ -94,7 +91,7 @@ adapters/     — implementations + infrastructure adapters (Prometheus, Slack, 
 
 ## Go Style Guide
 
-> Chi tiết + code examples: `doc/logmon.md` Section 9
+> Chi tiết + code examples: `doc_v2/11-coding-testing-standards.md`
 > Tham khảo: [Uber Go Style Guide](https://github.com/uber-go/guide/blob/master/style.md), [SOLID Go — Dave Cheney](https://dave.cheney.net/2016/08/20/solid-go-design), [OWASP Go-SCP](https://owasp.org/www-project-go-secure-coding-practices-guide/)
 
 ### Error Handling
@@ -166,8 +163,8 @@ PipelineModeChanged → AlertingService.UpdatePipelineAlerts()
 
 ## Key Documentation
 
-- `doc/logmon.md` — Complete system specification
-- `doc/diagrams/*.mmd` — Mermaid architecture diagrams
+- `doc_v2/` — Tài liệu thiết kế chi tiết (source of truth): 00-tong-quan · 01-kien-truc-tong-the · 02-backend-architecture · 03-logs-pipeline · 04-metrics-tracing · 05-alerting-slo · 06-incident-notification · 07-api-specification · 08-database-schema · 09-security · 10-deployment-operations · 11-coding-testing-standards · 12-roadmap · 13-adr
+- `README.md` — Tổng quan + quick start cho thành viên mới
 
 ## Frontend Design Skills
 
