@@ -1,4 +1,4 @@
--- 0001_create_users: bảng users cho user-service (walking skeleton).
+-- 000001_init: bảng users cho user-service.
 CREATE TABLE IF NOT EXISTS users (
     id            TEXT        PRIMARY KEY,
     email         TEXT        NOT NULL UNIQUE,

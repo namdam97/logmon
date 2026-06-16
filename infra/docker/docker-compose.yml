@@ -15,13 +15,29 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Migrations chạy tự động lần đầu khởi tạo DB.
-      - ../../backend/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U logmon -d logmon"]
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # Schema migrations qua golang-migrate (ADR: thay initdb để lặp lại được).
+  # Chạy one-shot khi `up`, idempotent (track schema_migrations). Cũng dùng
+  # cho `make migrate` / `make migrate-down`.
+  migrate:
+    image: migrate/migrate:v4.18.1
+    restart: "no"
+    volumes:
+      - ../../backend/migrations:/migrations:ro
+    command:
+      - -path
+      - /migrations
+      - -database
+      - postgres://logmon:${POSTGRES_PASSWORD:-logmon}@postgres:5432/logmon?sslmode=disable
+      - up
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   userservice:
     build:
@@ -43,14 +59,21 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local-dev-insecure-change-me}
       COOKIE_SECURE: "false"
       ALLOWED_ORIGIN: http://localhost:3000
+      # Nới qua env khi E2E/CI (make e2e set cao để không bị throttle).
+      AUTH_RATE_PER_MINUTE: ${AUTH_RATE_PER_MINUTE:-10}
+      AUTH_RATE_BURST: ${AUTH_RATE_BURST:-5}
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   # ── Demo workload (ADR-029) — sinh telemetry cho dev/test platform ──────────
+  # profile demo: không chạy ở vòng lặp dev mặc định (make up). Bật: make up-demo.
   demo-order:
+    profiles: [demo]
     build:
       context: ../../examples/demo-order
     restart: unless-stopped
@@ -93,6 +116,7 @@ services:
 
   # ── Monitoring stack (doc_v2/04 + 05) ───────────────────────────────────────
   prometheus:
+    profiles: [observability]
     image: prom/prometheus:v3.12.0
     restart: unless-stopped
     command:
@@ -121,6 +145,7 @@ services:
           cpus: "1.0"
 
   alertmanager:
+    profiles: [observability]
     image: prom/alertmanager:v0.32.1
     restart: unless-stopped
     command:
@@ -146,6 +171,7 @@ services:
           memory: 256m
 
   grafana:
+    profiles: [observability]
     image: grafana/grafana:12.3.7
     restart: unless-stopped
     environment:
@@ -177,6 +203,7 @@ services:
           memory: 512m
 
   node-exporter:
+    profiles: [observability]
     image: quay.io/prometheus/node-exporter:v1.9.1
     restart: unless-stopped
     pid: host
@@ -192,6 +219,7 @@ services:
           memory: 128m
 
   postgres-exporter:
+    profiles: [observability]
     image: quay.io/prometheuscommunity/postgres-exporter:v0.18.1
     restart: unless-stopped
     environment:
@@ -208,6 +236,7 @@ services:
 
   # ── Logs pipeline Mode A (doc_v2/03, ADR-018/019): agent → gateway → ES ────
   elasticsearch:
+    profiles: [observability]
     image: docker.elastic.co/elasticsearch/elasticsearch:9.4.2
     restart: unless-stopped
     environment:
@@ -237,6 +266,7 @@ services:
 
   # Bootstrap ILM policy + index template — one-shot, idempotent.
   es-init:
+    profiles: [observability]
     image: curlimages/curl:8.14.1
     restart: "no"
     depends_on:
@@ -250,6 +280,7 @@ services:
     command: ["/init/init.sh"]
 
   otel-gateway:
+    profiles: [observability]
     image: otel/opentelemetry-collector-contrib:0.154.0
     restart: unless-stopped
     # root để ghi persistent queue vào named volume (dev); prod hardening sau.
@@ -269,6 +300,7 @@ services:
           memory: 512m
 
   otel-agent:
+    profiles: [observability]
     image: otel/opentelemetry-collector-contrib:0.154.0
     restart: unless-stopped
     # root để đọc /var/lib/docker/containers (json-file logs mọi container).
@@ -286,6 +318,7 @@ services:
           memory: 256m
 
   elasticsearch-exporter:
+    profiles: [observability]
     image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.9.0
     restart: unless-stopped
     command:

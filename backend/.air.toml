@@ -1,0 +1,15 @@
+# Hot reload cho userservice khi dev (make dev-be → go run github.com/air-verse/air).
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/main ./cmd/userservice"
+  bin = "./tmp/main"
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "bin", "migrations"]
+  exclude_regex = ["_test\\.go"]
+  delay = 800
+  stop_on_error = true
+
+[misc]
+  clean_on_exit = true

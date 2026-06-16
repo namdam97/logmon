@@ -22,20 +22,27 @@ Tài liệu chi tiết: `doc/logmon.md` (1200+ lines) + 10 Mermaid diagrams tron
 
 ## Build & Run Commands
 
+> Vòng lặp local thống nhất qua **root `Makefile`** (`make help` để xem hết).
+> Stack nặng (ES/Grafana/Prometheus/OTel) nằm sau profile `observability`;
+> demo workload sau profile `demo`. Migrations dùng **golang-migrate** (không
+> còn initdb) — service `migrate` chạy one-shot khi `up`.
+
 ```bash
-# Backend (Go)
-go build ./cmd/orderservice/
-go test ./...
-golangci-lint run
+# Local dev (khuyến nghị — root Makefile)
+make doctor          # kiểm tra toolchain (docker/compose/go/pnpm/chrome)
+make up              # stack nhẹ: postgres + migrate + userservice
+make up-full         # + observability (ES/Grafana/Prometheus/Alertmanager/OTel)
+make up-demo         # + demo workload (demo-order + loadgen)
+make seed            # nạp dữ liệu demo (idempotent)
+make dev             # DB + hướng dẫn hot-reload; make dev-be / make dev-fe
+make migrate         # áp migrations (golang-migrate up); make migrate-down để rollback
+make test            # unit test BE (go -race) + FE (vitest)
+make e2e             # full-stack Playwright (tự dựng + teardown)
+make down            # dừng (down-v để xoá volume)
 
-# Frontend (Next.js)
-pnpm install
-pnpm build
-pnpm test
-
-# Full stack
-docker compose up                      # Mode A (dev, no Kafka)
-docker compose --profile scale up      # Mode B (production, with Kafka)
+# Trực tiếp (khi cần)
+cd backend && go build ./... && go test -race ./... && golangci-lint run
+cd frontend && pnpm install && pnpm build && pnpm test
 
 # Mermaid diagrams
 mmdc -i doc/diagrams/<file>.mmd -o doc/diagrams/<file>.png
