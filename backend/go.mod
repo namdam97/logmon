@@ -2,6 +2,8 @@ module github.com/namdam97/logmon/backend
 
 go 1.25.0
 
+toolchain go1.26.4
+
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-playground/validator/v10 v10.30.3
