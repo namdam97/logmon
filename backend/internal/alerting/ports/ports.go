@@ -27,6 +27,14 @@ type RuleRepository interface {
 type RuleReader interface {
 	ByID(ctx context.Context, id domain.RuleID) (domain.AlertRule, error)
 	List(ctx context.Context, workspaceID string) ([]domain.AlertRule, error)
+	// ListAll trả về mọi rule (mọi workspace) — dùng để render rule file.
+	ListAll(ctx context.Context) ([]domain.AlertRule, error)
+}
+
+// RuleSyncer đồng bộ toàn bộ rule hiện tại sang Prometheus (rule sync pipeline,
+// ADR-024). Idempotent — gọi lại sau mỗi thay đổi rule (qua outbox event).
+type RuleSyncer interface {
+	Sync(ctx context.Context) error
 }
 
 // EventPublisher ghi domain event vào outbox (trong tx của ctx). Trừu tượng hoá

@@ -87,9 +87,19 @@ func (r *RuleRepository) ByID(ctx context.Context, id domain.RuleID) (domain.Ale
 // List đọc các rule của một workspace (sắp theo name).
 func (r *RuleRepository) List(ctx context.Context, workspaceID string) ([]domain.AlertRule, error) {
 	const q = `SELECT ` + ruleColumns + ` FROM alert_rules WHERE workspace_id = $1 ORDER BY name`
-	rows, err := dbFrom(ctx, r.pool).Query(ctx, q, workspaceID)
+	return r.queryRules(ctx, q, workspaceID)
+}
+
+// ListAll đọc mọi rule (mọi workspace) — dùng render rule file.
+func (r *RuleRepository) ListAll(ctx context.Context) ([]domain.AlertRule, error) {
+	const q = `SELECT ` + ruleColumns + ` FROM alert_rules ORDER BY workspace_id, name`
+	return r.queryRules(ctx, q)
+}
+
+func (r *RuleRepository) queryRules(ctx context.Context, q string, args ...any) ([]domain.AlertRule, error) {
+	rows, err := dbFrom(ctx, r.pool).Query(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list rules: %w", err)
+		return nil, fmt.Errorf("query rules: %w", err)
 	}
 	defer rows.Close()
 

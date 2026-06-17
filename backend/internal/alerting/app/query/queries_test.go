@@ -28,6 +28,10 @@ func (r *fakeReader) List(_ context.Context, _ string) ([]domain.AlertRule, erro
 	return r.list, nil
 }
 
+func (r *fakeReader) ListAll(_ context.Context) ([]domain.AlertRule, error) {
+	return r.list, nil
+}
+
 func sampleRule(t *testing.T, id string) domain.AlertRule {
 	t.Helper()
 	rid, err := domain.NewRuleID(id)
