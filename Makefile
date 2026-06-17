@@ -86,7 +86,8 @@ test-fe: ## Frontend unit test (vitest)
 	cd frontend && pnpm install --frozen-lockfile && pnpm test
 
 test-integration: db ## Integration test BE (cần Postgres) — go test -tags integration
-	cd backend && DATABASE_URL="$(DB_URL_HOST)" go test -tags integration -race ./...
+	# -p 1: chạy tuần tự từng package (các integration test chia sẻ cùng DB).
+	cd backend && DATABASE_URL="$(DB_URL_HOST)" go test -tags integration -race -p 1 ./...
 
 e2e: ## Full-stack E2E: tự dựng BE+pg, chạy Playwright, teardown
 	AUTH_RATE_PER_MINUTE=100000 AUTH_RATE_BURST=100000 \

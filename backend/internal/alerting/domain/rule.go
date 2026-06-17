@@ -129,6 +129,45 @@ func NewAlertRule(in NewAlertRuleInput) (AlertRule, error) {
 	}, nil
 }
 
+// ReconstructInput dựng lại AlertRule từ dữ liệu DB đã hợp lệ — KHÔNG áp default
+// như NewAlertRule, giữ nguyên enabled/syncStatus/syncError/timestamps.
+type ReconstructInput struct {
+	ID          RuleID
+	WorkspaceID string
+	Name        string
+	Expression  string
+	Service     string
+	ForDuration time.Duration
+	Severity    Severity
+	Labels      map[string]string
+	Annotations map[string]string
+	Enabled     bool
+	SyncStatus  SyncStatus
+	SyncError   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// Reconstruct hydrate AlertRule từ persistence (repository). Tin dữ liệu DB.
+func Reconstruct(in ReconstructInput) AlertRule {
+	return AlertRule{
+		id:          in.ID,
+		workspaceID: in.WorkspaceID,
+		name:        in.Name,
+		expression:  in.Expression,
+		forDuration: in.ForDuration,
+		severity:    in.Severity,
+		service:     in.Service,
+		labels:      copyMap(in.Labels),
+		annotations: copyMap(in.Annotations),
+		enabled:     in.Enabled,
+		syncStatus:  in.SyncStatus,
+		syncError:   in.SyncError,
+		createdAt:   in.CreatedAt,
+		updatedAt:   in.UpdatedAt,
+	}
+}
+
 // Enabled trả về bản copy đã bật rule (sync về pending để render lại).
 func (r AlertRule) Enabled(now time.Time) AlertRule {
 	c := r.clone()
