@@ -71,6 +71,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          # Action chạy ở repo root (uses: bỏ qua defaults working-directory),
+          # nên phải trỏ tới frontend/package.json để đọc field packageManager.
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 20
