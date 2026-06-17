@@ -12,7 +12,7 @@ DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmo
 .DEFAULT_GOAL := help
 .PHONY: help doctor up up-full up-demo down down-v logs ps db \
         migrate migrate-down seed dev dev-be dev-fe \
-        test test-be test-fe e2e ci-local fmt lint build clean
+        test test-be test-fe test-integration e2e ci-local fmt lint build clean
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -84,6 +84,9 @@ test-be: ## Go test có race + coverage
 
 test-fe: ## Frontend unit test (vitest)
 	cd frontend && pnpm install --frozen-lockfile && pnpm test
+
+test-integration: db ## Integration test BE (cần Postgres) — go test -tags integration
+	cd backend && DATABASE_URL="$(DB_URL_HOST)" go test -tags integration -race ./...
 
 e2e: ## Full-stack E2E: tự dựng BE+pg, chạy Playwright, teardown
 	AUTH_RATE_PER_MINUTE=100000 AUTH_RATE_BURST=100000 \

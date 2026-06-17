@@ -35,6 +35,16 @@ groups:
           summary: "P95 latency > 1s on {{ $labels.job }} ({{ $value | humanizeDuration }})"
           runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/HighLatencyP95
 
+      # Outbox relay tụt — event chậm được publish (ADR-016 / doc_v2/05 §3).
+      - alert: OutboxLag
+        expr: logmon_outbox_lag_seconds > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox lag > 30s on {{ $labels.instance }} ({{ $value | humanizeDuration }})"
+          runbook_url: https://github.com/namdam97/logmon/wiki/runbooks/OutboxLag
+
       - alert: PGConnHigh
         # sum() vì pg_stat_activity_count tách series theo {datname, state};
         # scalar() vì single-instance Postgres (revisit khi có nhiều instance).
