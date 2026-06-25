@@ -17,10 +17,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	alertinghttp "github.com/namdam97/logmon/backend/internal/alerting/adapters/http"
+	alertingpg "github.com/namdam97/logmon/backend/internal/alerting/adapters/postgres"
+	"github.com/namdam97/logmon/backend/internal/alerting/adapters/promfile"
+	"github.com/namdam97/logmon/backend/internal/alerting/adapters/promql"
+	alertingsys "github.com/namdam97/logmon/backend/internal/alerting/adapters/system"
+	"github.com/namdam97/logmon/backend/internal/alerting/app/command"
+	"github.com/namdam97/logmon/backend/internal/alerting/app/query"
+	alertingdomain "github.com/namdam97/logmon/backend/internal/alerting/domain"
 	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
 	"github.com/namdam97/logmon/backend/internal/shared/middleware"
+	"github.com/namdam97/logmon/backend/internal/shared/outbox"
 	userhttp "github.com/namdam97/logmon/backend/internal/user/adapters/http"
 	userpg "github.com/namdam97/logmon/backend/internal/user/adapters/postgres"
 	usersys "github.com/namdam97/logmon/backend/internal/user/adapters/system"
@@ -35,6 +44,11 @@ const (
 	_defaultJWTTTL     = 24 * time.Hour
 	_authRatePerMinute = 10 // mặc định: giới hạn login/register mỗi IP
 	_authRateBurst     = 5
+
+	// _defaultWorkspaceID là workspace mặc định GĐ2 (multi-tenancy đầy đủ ở GĐ3).
+	_defaultWorkspaceID = "00000000-0000-0000-0000-000000000001"
+	_defaultRulesDir    = "/etc/prometheus/generated" // Prometheus mount đọc rule file đã render
+	_defaultPromURL     = "http://prometheus:9090"    // cần --web.enable-lifecycle cho /-/reload
 )
 
 func main() {
@@ -54,6 +68,8 @@ type config struct {
 	allowedOrigin  string
 	authRatePerMin int
 	authRateBurst  int
+	rulesDir       string
+	promURL        string
 }
 
 func loadConfig() config {
@@ -68,7 +84,36 @@ func loadConfig() config {
 		allowedOrigin:  os.Getenv("ALLOWED_ORIGIN"),
 		authRatePerMin: envIntOr("AUTH_RATE_PER_MINUTE", _authRatePerMinute),
 		authRateBurst:  envIntOr("AUTH_RATE_BURST", _authRateBurst),
+		rulesDir:       envOr("RULES_DIR", _defaultRulesDir),
+		promURL:        envOr("PROMETHEUS_URL", _defaultPromURL),
 	}
+}
+
+// alertingDeps gom các thành phần alerting BC dựng ở composition root.
+type alertingDeps struct {
+	handler *alertinghttp.Handler
+	relay   *outbox.Relay
+}
+
+// buildAlerting dựng alerting BC + rule-sync pipeline: rule CRUD ghi event vào
+// outbox; relay quét outbox và resync toàn bộ rule sang Prometheus qua bus.
+func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
+	store := outbox.NewStore(pool)
+	repo := alertingpg.NewRuleRepository(pool)
+	publisher := alertingpg.NewEventPublisher(pool, store)
+	syncer := promfile.NewSyncer(repo, cfg.rulesDir, cfg.promURL)
+	createRule := command.NewCreateRuleHandler(
+		alertingpg.NewTxManager(pool), repo, publisher,
+		promql.NewValidator(), alertingsys.NewUUIDGenerator(), alertingsys.NewClock())
+	handler := alertinghttp.NewHandler(createRule, query.NewRuleQueries(repo), _defaultWorkspaceID)
+
+	bus := outbox.NewBus()
+	resync := func(ctx context.Context, _ outbox.Event) error { return syncer.Sync(ctx) }
+	bus.Subscribe(alertingdomain.EventAlertRuleCreated, resync)
+	bus.Subscribe(alertingdomain.EventAlertRuleUpdated, resync)
+	bus.Subscribe(alertingdomain.EventAlertRuleDeleted, resync)
+
+	return alertingDeps{handler: handler, relay: outbox.NewRelay(store, bus.Dispatch)}
 }
 
 // envIntOr đọc một biến môi trường số nguyên dương; rỗng/không hợp lệ → fallback.
@@ -119,7 +164,10 @@ func run() error {
 		jwtSvc,
 	)
 
-	router := buildRouter(log, mx, svc, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
+	alerting := buildAlerting(pool, cfg)
+	go alerting.relay.Run(ctx)
+
+	router := buildRouter(log, mx, svc, alerting.handler, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst)
 
 	srv := &http.Server{
@@ -148,6 +196,7 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+	alerting.relay.Wait() // ctx đã hủy → relay thoát; chờ goroutine kết thúc hẳn
 	return nil
 }
 
@@ -155,6 +204,7 @@ func buildRouter(
 	log *logger.Logger,
 	mx *metrics.Metrics,
 	svc *userapp.Service,
+	alertingHandler *alertinghttp.Handler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	cookieSecure bool,
@@ -190,6 +240,7 @@ func buildRouter(
 	})
 	authRate := middleware.NewPerMinuteLimiter(authRatePerMin, authRateBurst)
 	handler.Register(api, auth.RequireAuth(jwtSvc), authRate.Middleware())
+	alertingHandler.Register(api, auth.RequireAuth(jwtSvc))
 	return r
 }
 
