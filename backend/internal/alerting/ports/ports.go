@@ -16,11 +16,20 @@ type TxManager interface {
 	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// RuleRepository ghi alert rule. Save chạy trong tx của ctx (gọi bên trong
-// TxManager.WithinTx). ExistsByName kiểm trùng tên trong workspace.
+// RuleRepository ghi alert rule. Save/Update/Delete chạy trong tx của ctx (gọi
+// bên trong TxManager.WithinTx). ExistsByName kiểm trùng tên trong workspace.
 type RuleRepository interface {
 	Save(ctx context.Context, r domain.AlertRule) error
+	Update(ctx context.Context, r domain.AlertRule) error
+	Delete(ctx context.Context, id domain.RuleID) error
 	ExistsByName(ctx context.Context, workspaceID, name string) (bool, error)
+}
+
+// RuleSyncStatusWriter cập nhật trạng thái sync của rule sau khi Syncer chạy
+// (ADR-024) — đóng vòng lặp render→reload→ghi lại sync_status vào DB.
+type RuleSyncStatusWriter interface {
+	MarkSynced(ctx context.Context, now time.Time) error
+	MarkSyncError(ctx context.Context, message string, now time.Time) error
 }
 
 // RuleReader là read side (CQRS) — truy vấn rule, có thể tối ưu riêng.

@@ -21,12 +21,18 @@ func (fakeTx) WithinTx(ctx context.Context, fn func(context.Context) error) erro
 }
 
 type fakeRepo struct {
-	names   map[string]bool // "ws|name" → tồn tại
-	saved   []domain.AlertRule
-	saveErr error
+	names     map[string]bool             // "ws|name" → tồn tại
+	byID      map[string]domain.AlertRule // id → rule (reader + update/delete)
+	saved     []domain.AlertRule
+	updated   []domain.AlertRule
+	deleted   []string
+	saveErr   error
+	updateErr error
 }
 
-func newFakeRepo() *fakeRepo { return &fakeRepo{names: map[string]bool{}} }
+func newFakeRepo() *fakeRepo {
+	return &fakeRepo{names: map[string]bool{}, byID: map[string]domain.AlertRule{}}
+}
 
 func (r *fakeRepo) ExistsByName(_ context.Context, ws, name string) (bool, error) {
 	return r.names[ws+"|"+name], nil
@@ -37,7 +43,41 @@ func (r *fakeRepo) Save(_ context.Context, rule domain.AlertRule) error {
 		return r.saveErr
 	}
 	r.saved = append(r.saved, rule)
+	r.byID[rule.ID().String()] = rule
 	return nil
+}
+
+func (r *fakeRepo) Update(_ context.Context, rule domain.AlertRule) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
+	r.updated = append(r.updated, rule)
+	r.byID[rule.ID().String()] = rule
+	return nil
+}
+
+func (r *fakeRepo) Delete(_ context.Context, id domain.RuleID) error {
+	r.deleted = append(r.deleted, id.String())
+	delete(r.byID, id.String())
+	return nil
+}
+
+// --- reader side (CQRS) cho update/delete/toggle ---
+
+func (r *fakeRepo) ByID(_ context.Context, id domain.RuleID) (domain.AlertRule, error) {
+	rule, ok := r.byID[id.String()]
+	if !ok {
+		return domain.AlertRule{}, domain.ErrRuleNotFound
+	}
+	return rule, nil
+}
+
+func (r *fakeRepo) List(context.Context, string) ([]domain.AlertRule, error) {
+	return nil, nil
+}
+
+func (r *fakeRepo) ListAll(context.Context) ([]domain.AlertRule, error) {
+	return nil, nil
 }
 
 type fakePublisher struct {

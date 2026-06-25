@@ -28,18 +28,46 @@ type ruleReader interface {
 	List(ctx context.Context, workspaceID string) ([]domain.AlertRule, error)
 }
 
+// ruleUpdater là write-side use case cập nhật rule.
+type ruleUpdater interface {
+	Handle(ctx context.Context, in command.UpdateRuleInput) (domain.AlertRule, error)
+}
+
+// ruleDeleter là write-side use case xoá rule.
+type ruleDeleter interface {
+	Handle(ctx context.Context, workspaceID, id string) error
+}
+
+// ruleEnabler là write-side use case bật/tắt rule.
+type ruleEnabler interface {
+	Handle(ctx context.Context, workspaceID, id string, enabled bool) (domain.AlertRule, error)
+}
+
 // Handler gắn use case alerting vào HTTP routes.
 type Handler struct {
 	creator     ruleCreator
+	updater     ruleUpdater
+	deleter     ruleDeleter
+	enabler     ruleEnabler
 	queries     ruleReader
 	validate    *validator.Validate
 	workspaceID string
 }
 
 // NewHandler tạo Handler. workspaceID là workspace mặc định GĐ2 (multi-tenancy ở GĐ3).
-func NewHandler(creator ruleCreator, queries ruleReader, workspaceID string) *Handler {
+func NewHandler(
+	creator ruleCreator,
+	updater ruleUpdater,
+	deleter ruleDeleter,
+	enabler ruleEnabler,
+	queries ruleReader,
+	workspaceID string,
+) *Handler {
 	return &Handler{
 		creator:     creator,
+		updater:     updater,
+		deleter:     deleter,
+		enabler:     enabler,
 		queries:     queries,
 		validate:    validator.New(validator.WithRequiredStructEnabled()),
 		workspaceID: workspaceID,
@@ -51,6 +79,10 @@ func (h *Handler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
 	rg.POST("/alert-rules", authMW, h.create)
 	rg.GET("/alert-rules", authMW, h.list)
 	rg.GET("/alert-rules/:id", authMW, h.get)
+	rg.PUT("/alert-rules/:id", authMW, h.update)
+	rg.DELETE("/alert-rules/:id", authMW, h.delete)
+	rg.POST("/alert-rules/:id/enable", authMW, h.enable)
+	rg.POST("/alert-rules/:id/disable", authMW, h.disable)
 }
 
 type createRuleRequest struct {
@@ -150,6 +182,60 @@ func (h *Handler) list(c *gin.Context) {
 		out = append(out, toResponse(r))
 	}
 	httpx.OK(c, http.StatusOK, out)
+}
+
+func (h *Handler) update(c *gin.Context) {
+	var req createRuleRequest // cùng shape với create (full replace - PUT)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.Fail(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.validate.Struct(req); err != nil {
+		httpx.Fail(c, http.StatusBadRequest, "invalid request fields")
+		return
+	}
+	dur, err := time.ParseDuration(req.ForDuration)
+	if err != nil {
+		httpx.Fail(c, http.StatusBadRequest, "invalid forDuration: must be a Go duration like 5m")
+		return
+	}
+
+	rule, err := h.updater.Handle(c.Request.Context(), command.UpdateRuleInput{
+		WorkspaceID: h.workspaceID,
+		ID:          c.Param("id"),
+		Name:        req.Name,
+		Expression:  req.Expression,
+		Service:     req.Service,
+		Severity:    req.Severity,
+		ForDuration: dur,
+		Labels:      req.Labels,
+		Annotations: req.Annotations,
+	})
+	if err != nil {
+		failDomain(c, err)
+		return
+	}
+	httpx.OK(c, http.StatusOK, toResponse(rule))
+}
+
+func (h *Handler) delete(c *gin.Context) {
+	if err := h.deleter.Handle(c.Request.Context(), h.workspaceID, c.Param("id")); err != nil {
+		failDomain(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) enable(c *gin.Context)  { h.setEnabled(c, true) }
+func (h *Handler) disable(c *gin.Context) { h.setEnabled(c, false) }
+
+func (h *Handler) setEnabled(c *gin.Context, enabled bool) {
+	rule, err := h.enabler.Handle(c.Request.Context(), h.workspaceID, c.Param("id"), enabled)
+	if err != nil {
+		failDomain(c, err)
+		return
+	}
+	httpx.OK(c, http.StatusOK, toResponse(rule))
 }
 
 // failDomain map domain error sang HTTP status + message generic an toàn.

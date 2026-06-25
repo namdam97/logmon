@@ -26,6 +26,28 @@ func (r *fakeReader) ByID(context.Context, domain.RuleID) (domain.AlertRule, err
 func (r *fakeReader) List(context.Context, string) ([]domain.AlertRule, error) { return r.rules, nil }
 func (r *fakeReader) ListAll(context.Context) ([]domain.AlertRule, error)      { return r.rules, nil }
 
+// fakeStatus ghi nhận lời gọi writeback sync_status (đóng vòng pipeline).
+type fakeStatus struct {
+	synced  int
+	errored int
+	lastErr string
+}
+
+func (s *fakeStatus) MarkSynced(context.Context, time.Time) error { s.synced++; return nil }
+func (s *fakeStatus) MarkSyncError(_ context.Context, msg string, _ time.Time) error {
+	s.errored++
+	s.lastErr = msg
+	return nil
+}
+
+type fakeClock struct{}
+
+func (fakeClock) Now() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+
+func newSyncer(reader *fakeReader, status *fakeStatus, dir, url string) *promfile.Syncer {
+	return promfile.NewSyncer(reader, status, fakeClock{}, dir, url)
+}
+
 func ruleWith(t *testing.T, name, expr string) domain.AlertRule {
 	t.Helper()
 	id, err := domain.NewRuleID("11111111-1111-1111-1111-111111111111")
@@ -65,10 +87,13 @@ func TestSyncerSuccess(t *testing.T) {
 	dir := t.TempDir()
 	srv, calls := reloadServer(t, http.StatusOK)
 	reader := &fakeReader{rules: []domain.AlertRule{ruleWith(t, "HighErrorRate", "up == 0")}}
-	s := promfile.NewSyncer(reader, dir, srv.URL)
+	status := &fakeStatus{}
+	s := newSyncer(reader, status, dir, srv.URL)
 
 	require.NoError(t, s.Sync(context.Background()))
 	require.Equal(t, int32(1), calls.Load(), "đã gọi reload")
+	require.Equal(t, 1, status.synced, "ghi sync_status=synced sau khi reload OK")
+	require.Equal(t, 0, status.errored)
 
 	content, err := os.ReadFile(filepath.Join(dir, genFile))
 	require.NoError(t, err)
@@ -81,11 +106,14 @@ func TestSyncerInvalidPromQLNotWritten(t *testing.T) {
 	srv, calls := reloadServer(t, http.StatusOK)
 	// Expr non-empty (qua domain) nhưng sai cú pháp → rulefmt validate chặn.
 	reader := &fakeReader{rules: []domain.AlertRule{ruleWith(t, "Bad", "(((")}}
-	s := promfile.NewSyncer(reader, dir, srv.URL)
+	status := &fakeStatus{}
+	s := newSyncer(reader, status, dir, srv.URL)
 
 	err := s.Sync(context.Background())
 	require.Error(t, err)
 	require.Equal(t, int32(0), calls.Load(), "không reload khi validate fail")
+	require.Equal(t, 1, status.errored, "ghi sync_status=error khi validate fail")
+	require.Equal(t, 0, status.synced)
 	_, statErr := os.Stat(filepath.Join(dir, genFile))
 	require.True(t, os.IsNotExist(statErr), "không ghi file khi validate fail")
 }
@@ -97,10 +125,12 @@ func TestSyncerReloadFailureRollsBack(t *testing.T) {
 
 	srv, _ := reloadServer(t, http.StatusInternalServerError)
 	reader := &fakeReader{rules: []domain.AlertRule{ruleWith(t, "HighErrorRate", "up == 0")}}
-	s := promfile.NewSyncer(reader, dir, srv.URL)
+	status := &fakeStatus{}
+	s := newSyncer(reader, status, dir, srv.URL)
 
 	err := s.Sync(context.Background())
 	require.Error(t, err)
+	require.Equal(t, 1, status.errored, "reload fail → ghi sync_status=error")
 
 	// Reload fail → file rollback về nội dung cũ.
 	content, err := os.ReadFile(target)

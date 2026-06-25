@@ -100,12 +100,17 @@ type alertingDeps struct {
 func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 	store := outbox.NewStore(pool)
 	repo := alertingpg.NewRuleRepository(pool)
+	txm := alertingpg.NewTxManager(pool)
 	publisher := alertingpg.NewEventPublisher(pool, store)
-	syncer := promfile.NewSyncer(repo, cfg.rulesDir, cfg.promURL)
-	createRule := command.NewCreateRuleHandler(
-		alertingpg.NewTxManager(pool), repo, publisher,
-		promql.NewValidator(), alertingsys.NewUUIDGenerator(), alertingsys.NewClock())
-	handler := alertinghttp.NewHandler(createRule, query.NewRuleQueries(repo), _defaultWorkspaceID)
+	validator := promql.NewValidator()
+	clock := alertingsys.NewClock()
+	syncer := promfile.NewSyncer(repo, repo, clock, cfg.rulesDir, cfg.promURL)
+
+	createRule := command.NewCreateRuleHandler(txm, repo, publisher, validator, alertingsys.NewUUIDGenerator(), clock)
+	updateRule := command.NewUpdateRuleHandler(txm, repo, repo, publisher, validator, clock)
+	deleteRule := command.NewDeleteRuleHandler(txm, repo, repo, publisher)
+	enableRule := command.NewSetRuleEnabledHandler(txm, repo, repo, publisher, clock)
+	handler := alertinghttp.NewHandler(createRule, updateRule, deleteRule, enableRule, query.NewRuleQueries(repo), _defaultWorkspaceID)
 
 	bus := outbox.NewBus()
 	resync := func(ctx context.Context, _ outbox.Event) error { return syncer.Sync(ctx) }

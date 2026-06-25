@@ -76,37 +76,69 @@ type NewAlertRuleInput struct {
 	CreatedAt   time.Time
 }
 
+// ruleFields gom các field người dùng nhập vào để validate chung giữa
+// NewAlertRule (tạo) và Update (sửa) — tránh lặp invariant.
+type ruleFields struct {
+	name        string
+	workspaceID string
+	expression  string
+	service     string
+	forDuration time.Duration
+	severity    Severity
+	annotations map[string]string
+}
+
+// validateRuleFields kiểm mọi invariant nội dung rule, trả lại giá trị đã trim
+// (name/expression/service). KHÔNG validate cú pháp PromQL — đó là việc của
+// ports.RuleValidator ở tầng app.
+func validateRuleFields(f ruleFields) (name, expression, service string, err error) {
+	name = strings.TrimSpace(f.name)
+	switch {
+	case name == "":
+		return "", "", "", newValidationError("name", "must not be empty")
+	case len(name) > maxNameLength:
+		return "", "", "", newValidationError("name", "exceeds maximum length")
+	}
+	if strings.TrimSpace(f.workspaceID) == "" {
+		return "", "", "", newValidationError("workspaceId", "must not be empty")
+	}
+	expression = strings.TrimSpace(f.expression)
+	if expression == "" {
+		return "", "", "", newValidationError("expression", "must not be empty")
+	}
+	service = strings.TrimSpace(f.service)
+	switch {
+	case service == "":
+		return "", "", "", newValidationError("service", "must not be empty")
+	case len(service) > maxServiceLength:
+		return "", "", "", newValidationError("service", "exceeds maximum length")
+	}
+	if strings.TrimSpace(f.annotations[AnnotationSummary]) == "" {
+		return "", "", "", newValidationError("annotations.summary", "is required")
+	}
+	if strings.TrimSpace(f.annotations[AnnotationRunbookURL]) == "" {
+		return "", "", "", newValidationError("annotations.runbook_url", "is required")
+	}
+	if minDur := f.severity.MinForDuration(); f.forDuration < minDur {
+		return "", "", "", newValidationError("forDuration", "below minimum for severity")
+	}
+	return name, expression, service, nil
+}
+
 // NewAlertRule tạo rule mới đã validate đầy đủ invariant. Expression CHỈ kiểm
 // non-empty ở domain; validate cú pháp PromQL do tầng app (ports.RuleValidator).
 func NewAlertRule(in NewAlertRuleInput) (AlertRule, error) {
-	name := strings.TrimSpace(in.Name)
-	switch {
-	case name == "":
-		return AlertRule{}, newValidationError("name", "must not be empty")
-	case len(name) > maxNameLength:
-		return AlertRule{}, newValidationError("name", "exceeds maximum length")
-	}
-	if strings.TrimSpace(in.WorkspaceID) == "" {
-		return AlertRule{}, newValidationError("workspaceId", "must not be empty")
-	}
-	if strings.TrimSpace(in.Expression) == "" {
-		return AlertRule{}, newValidationError("expression", "must not be empty")
-	}
-	service := strings.TrimSpace(in.Service)
-	switch {
-	case service == "":
-		return AlertRule{}, newValidationError("service", "must not be empty")
-	case len(service) > maxServiceLength:
-		return AlertRule{}, newValidationError("service", "exceeds maximum length")
-	}
-	if strings.TrimSpace(in.Annotations[AnnotationSummary]) == "" {
-		return AlertRule{}, newValidationError("annotations.summary", "is required")
-	}
-	if strings.TrimSpace(in.Annotations[AnnotationRunbookURL]) == "" {
-		return AlertRule{}, newValidationError("annotations.runbook_url", "is required")
-	}
-	if minDur := in.Severity.MinForDuration(); in.ForDuration < minDur {
-		return AlertRule{}, newValidationError("forDuration", "below minimum for severity")
+	name, expression, service, err := validateRuleFields(ruleFields{
+		name:        in.Name,
+		workspaceID: in.WorkspaceID,
+		expression:  in.Expression,
+		service:     in.Service,
+		forDuration: in.ForDuration,
+		severity:    in.Severity,
+		annotations: in.Annotations,
+	})
+	if err != nil {
+		return AlertRule{}, err
 	}
 	if in.CreatedAt.IsZero() {
 		return AlertRule{}, newValidationError("createdAt", "must be set")
@@ -116,7 +148,7 @@ func NewAlertRule(in NewAlertRuleInput) (AlertRule, error) {
 		id:          in.ID,
 		workspaceID: in.WorkspaceID,
 		name:        name,
-		expression:  strings.TrimSpace(in.Expression),
+		expression:  expression,
 		forDuration: in.ForDuration,
 		severity:    in.Severity,
 		service:     service,
@@ -127,6 +159,47 @@ func NewAlertRule(in NewAlertRuleInput) (AlertRule, error) {
 		createdAt:   in.CreatedAt,
 		updatedAt:   in.CreatedAt,
 	}, nil
+}
+
+// UpdateInput gom các field người dùng có thể sửa trên một rule đã tồn tại.
+// ID/WorkspaceID/CreatedAt/Enabled không đổi qua Update (toggle dùng Enabled/Disabled).
+type UpdateInput struct {
+	Name        string
+	Expression  string
+	Service     string
+	ForDuration time.Duration
+	Severity    Severity
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
+// Update trả về bản copy rule đã đổi field nội dung (đã validate invariant), đặt
+// lại sync về pending để render lại. Giữ nguyên id/workspaceId/enabled/createdAt.
+func (r AlertRule) Update(in UpdateInput, now time.Time) (AlertRule, error) {
+	name, expression, service, err := validateRuleFields(ruleFields{
+		name:        in.Name,
+		workspaceID: r.workspaceID,
+		expression:  in.Expression,
+		service:     in.Service,
+		forDuration: in.ForDuration,
+		severity:    in.Severity,
+		annotations: in.Annotations,
+	})
+	if err != nil {
+		return AlertRule{}, err
+	}
+	c := r.clone()
+	c.name = name
+	c.expression = expression
+	c.service = service
+	c.forDuration = in.ForDuration
+	c.severity = in.Severity
+	c.labels = copyMap(in.Labels)
+	c.annotations = copyMap(in.Annotations)
+	c.syncStatus = SyncPending
+	c.syncError = ""
+	c.updatedAt = now
+	return c, nil
 }
 
 // ReconstructInput dựng lại AlertRule từ dữ liệu DB đã hợp lệ — KHÔNG áp default

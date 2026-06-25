@@ -46,6 +46,46 @@ func (f *fakeReader) List(context.Context, string) ([]domain.AlertRule, error) {
 	return f.rules, f.err
 }
 
+type fakeUpdater struct {
+	rule   domain.AlertRule
+	err    error
+	got    command.UpdateRuleInput
+	called bool
+}
+
+func (f *fakeUpdater) Handle(_ context.Context, in command.UpdateRuleInput) (domain.AlertRule, error) {
+	f.called = true
+	f.got = in
+	return f.rule, f.err
+}
+
+type fakeDeleter struct {
+	err    error
+	gotID  string
+	gotWS  string
+	called bool
+}
+
+func (f *fakeDeleter) Handle(_ context.Context, ws, id string) error {
+	f.called = true
+	f.gotWS = ws
+	f.gotID = id
+	return f.err
+}
+
+type fakeEnabler struct {
+	rule       domain.AlertRule
+	err        error
+	gotEnabled bool
+	called     bool
+}
+
+func (f *fakeEnabler) Handle(_ context.Context, _, _ string, enabled bool) (domain.AlertRule, error) {
+	f.called = true
+	f.gotEnabled = enabled
+	return f.rule, f.err
+}
+
 func fixtureRule(t *testing.T) domain.AlertRule {
 	t.Helper()
 	id, err := domain.NewRuleID("11111111-1111-1111-1111-111111111111")
@@ -71,9 +111,13 @@ func fixtureRule(t *testing.T) domain.AlertRule {
 }
 
 func newEngine(creator ruleCreator, reader ruleReader) *gin.Engine {
+	return newEngineFull(creator, &fakeUpdater{}, &fakeDeleter{}, &fakeEnabler{}, reader)
+}
+
+func newEngineFull(creator ruleCreator, updater ruleUpdater, deleter ruleDeleter, enabler ruleEnabler, reader ruleReader) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := NewHandler(creator, reader, testWorkspace)
+	h := NewHandler(creator, updater, deleter, enabler, reader, testWorkspace)
 	passthrough := func(c *gin.Context) { c.Next() }
 	h.Register(r.Group("/api/v1"), passthrough)
 	return r
@@ -173,6 +217,99 @@ func TestGetRule(t *testing.T) {
 			require.Equal(t, tt.wantStatus, w.Code)
 		})
 	}
+}
+
+func TestUpdateRule(t *testing.T) {
+	const validBody = `{"name":"HighErrorRate","expression":"up == 1",` +
+		`"service":"api","severity":"critical","forDuration":"2m",` +
+		`"annotations":{"summary":"s","runbook_url":"http://rb"}}`
+
+	tests := []struct {
+		name       string
+		body       string
+		updaterErr error
+		wantStatus int
+		wantCalled bool
+	}{
+		{name: "valid", body: validBody, wantStatus: http.StatusOK, wantCalled: true},
+		{name: "invalid json", body: "{", wantStatus: http.StatusBadRequest},
+		{name: "bad duration", body: `{"name":"x","expression":"up","service":"api","severity":"critical","forDuration":"abc","annotations":{"summary":"s"}}`, wantStatus: http.StatusBadRequest},
+		{name: "not found", body: validBody, updaterErr: domain.ErrRuleNotFound, wantStatus: http.StatusNotFound, wantCalled: true},
+		{name: "name taken", body: validBody, updaterErr: domain.ErrRuleNameTaken, wantStatus: http.StatusConflict, wantCalled: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updater := &fakeUpdater{rule: fixtureRule(t), err: tt.updaterErr}
+			r := newEngineFull(&fakeCreator{}, updater, &fakeDeleter{}, &fakeEnabler{}, &fakeReader{})
+
+			w := doJSON(t, r, http.MethodPut, "/api/v1/alert-rules/11111111-1111-1111-1111-111111111111", tt.body)
+
+			require.Equal(t, tt.wantStatus, w.Code)
+			require.Equal(t, tt.wantCalled, updater.called)
+			if tt.wantCalled {
+				require.Equal(t, "11111111-1111-1111-1111-111111111111", updater.got.ID)
+				require.Equal(t, testWorkspace, updater.got.WorkspaceID)
+			}
+		})
+	}
+}
+
+func TestDeleteRule(t *testing.T) {
+	tests := []struct {
+		name       string
+		deleterErr error
+		wantStatus int
+	}{
+		{name: "ok", wantStatus: http.StatusNoContent},
+		{name: "not found", deleterErr: domain.ErrRuleNotFound, wantStatus: http.StatusNotFound},
+		{name: "internal error", deleterErr: errors.New("boom"), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deleter := &fakeDeleter{err: tt.deleterErr}
+			r := newEngineFull(&fakeCreator{}, &fakeUpdater{}, deleter, &fakeEnabler{}, &fakeReader{})
+
+			w := doJSON(t, r, http.MethodDelete, "/api/v1/alert-rules/11111111-1111-1111-1111-111111111111", "")
+
+			require.Equal(t, tt.wantStatus, w.Code)
+			require.True(t, deleter.called)
+			require.Equal(t, testWorkspace, deleter.gotWS)
+		})
+	}
+}
+
+func TestEnableDisableRule(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		wantEnabled bool
+	}{
+		{name: "enable", path: "/api/v1/alert-rules/11111111-1111-1111-1111-111111111111/enable", wantEnabled: true},
+		{name: "disable", path: "/api/v1/alert-rules/11111111-1111-1111-1111-111111111111/disable", wantEnabled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enabler := &fakeEnabler{rule: fixtureRule(t)}
+			r := newEngineFull(&fakeCreator{}, &fakeUpdater{}, &fakeDeleter{}, enabler, &fakeReader{})
+
+			w := doJSON(t, r, http.MethodPost, tt.path, "")
+
+			require.Equal(t, http.StatusOK, w.Code)
+			require.True(t, enabler.called)
+			require.Equal(t, tt.wantEnabled, enabler.gotEnabled)
+		})
+	}
+}
+
+func TestEnableRule_NotFound(t *testing.T) {
+	enabler := &fakeEnabler{err: domain.ErrRuleNotFound}
+	r := newEngineFull(&fakeCreator{}, &fakeUpdater{}, &fakeDeleter{}, enabler, &fakeReader{})
+
+	w := doJSON(t, r, http.MethodPost, "/api/v1/alert-rules/11111111-1111-1111-1111-111111111111/enable", "")
+
+	require.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestListRules(t *testing.T) {

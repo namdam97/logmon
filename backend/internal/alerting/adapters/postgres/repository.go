@@ -27,8 +27,9 @@ type RuleRepository struct {
 }
 
 var (
-	_ ports.RuleRepository = (*RuleRepository)(nil)
-	_ ports.RuleReader     = (*RuleRepository)(nil)
+	_ ports.RuleRepository       = (*RuleRepository)(nil)
+	_ ports.RuleReader           = (*RuleRepository)(nil)
+	_ ports.RuleSyncStatusWriter = (*RuleRepository)(nil)
 )
 
 // NewRuleRepository tạo repository với pool.
@@ -62,6 +63,85 @@ func (r *RuleRepository) Save(ctx context.Context, rule domain.AlertRule) error 
 		return fmt.Errorf("insert alert rule: %w", err)
 	}
 	return nil
+}
+
+// Update ghi đè rule theo id (trong tx của ctx). Vi phạm UNIQUE(ws,name) →
+// ErrRuleNameTaken; không có dòng nào khớp id → ErrRuleNotFound.
+func (r *RuleRepository) Update(ctx context.Context, rule domain.AlertRule) error {
+	labels, err := json.Marshal(rule.Labels())
+	if err != nil {
+		return fmt.Errorf("marshal labels: %w", err)
+	}
+	annotations, err := json.Marshal(rule.Annotations())
+	if err != nil {
+		return fmt.Errorf("marshal annotations: %w", err)
+	}
+	forDur := pgtype.Interval{Microseconds: rule.ForDuration().Microseconds(), Valid: true}
+
+	const q = `UPDATE alert_rules SET
+		name = $2, expression = $3, for_duration = $4, severity = $5, service = $6,
+		labels = $7, annotations = $8, enabled = $9, sync_status = $10,
+		sync_error = $11, updated_at = $12
+		WHERE id = $1`
+	tag, err := dbFrom(ctx, r.pool).Exec(ctx, q,
+		rule.ID().String(), rule.Name(), rule.Expression(), forDur,
+		rule.Severity().String(), rule.Service(), string(labels), string(annotations),
+		rule.IsEnabled(), string(rule.SyncStatus()), nullableSyncError(rule.SyncError()), rule.UpdatedAt())
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode {
+			return domain.ErrRuleNameTaken
+		}
+		return fmt.Errorf("update alert rule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrRuleNotFound
+	}
+	return nil
+}
+
+// Delete xoá rule theo id (trong tx của ctx); ErrRuleNotFound nếu không có.
+func (r *RuleRepository) Delete(ctx context.Context, id domain.RuleID) error {
+	const q = `DELETE FROM alert_rules WHERE id = $1`
+	tag, err := dbFrom(ctx, r.pool).Exec(ctx, q, id.String())
+	if err != nil {
+		return fmt.Errorf("delete alert rule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrRuleNotFound
+	}
+	return nil
+}
+
+// MarkSynced đánh dấu mọi rule đã đồng bộ thành công sang Prometheus (chỉ chạm
+// dòng có trạng thái khác để tránh bump updated_at thừa ở happy path).
+func (r *RuleRepository) MarkSynced(ctx context.Context, now time.Time) error {
+	const q = `UPDATE alert_rules
+		SET sync_status = $1, sync_error = NULL, updated_at = $2
+		WHERE sync_status <> $1 OR sync_error IS NOT NULL`
+	if _, err := dbFrom(ctx, r.pool).Exec(ctx, q, string(domain.SyncSynced), now); err != nil {
+		return fmt.Errorf("mark synced: %w", err)
+	}
+	return nil
+}
+
+// MarkSyncError đánh dấu mọi rule sync lỗi kèm thông điệp (sync pipeline fail).
+func (r *RuleRepository) MarkSyncError(ctx context.Context, message string, now time.Time) error {
+	const q = `UPDATE alert_rules
+		SET sync_status = $1, sync_error = $2, updated_at = $3
+		WHERE sync_status <> $1 OR sync_error IS DISTINCT FROM $2`
+	if _, err := dbFrom(ctx, r.pool).Exec(ctx, q, string(domain.SyncError), message, now); err != nil {
+		return fmt.Errorf("mark sync error: %w", err)
+	}
+	return nil
+}
+
+// nullableSyncError map chuỗi rỗng → NULL để cột sync_error sạch khi không lỗi.
+func nullableSyncError(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // ExistsByName kiểm rule trùng tên trong workspace.
