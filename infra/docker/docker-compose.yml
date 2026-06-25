@@ -39,6 +39,15 @@ services:
       postgres:
         condition: service_healthy
 
+  # Khởi tạo volume rule-generated với quyền cho user nonroot (uid 65532 của
+  # distroless): userservice ghi rule file, Prometheus mount read-only để đọc.
+  genrules-init:
+    image: busybox:1.37
+    restart: "no"
+    command: ["sh", "-c", "mkdir -p /data && chown -R 65532:65532 /data && chmod 0755 /data"]
+    volumes:
+      - genrules:/data
+
   userservice:
     build:
       context: ../../backend
@@ -62,12 +71,19 @@ services:
       # Nới qua env khi E2E/CI (make e2e set cao để không bị throttle).
       AUTH_RATE_PER_MINUTE: ${AUTH_RATE_PER_MINUTE:-10}
       AUTH_RATE_BURST: ${AUTH_RATE_BURST:-5}
+      # Rule sync pipeline (ADR-024): render rule file vào volume chung với Prometheus.
+      RULES_DIR: /etc/prometheus/generated
+      PROMETHEUS_URL: http://prometheus:9090
+    volumes:
+      - genrules:/etc/prometheus/generated
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      genrules-init:
         condition: service_completed_successfully
 
   # ── Demo workload (ADR-029) — sinh telemetry cho dev/test platform ──────────
@@ -129,6 +145,7 @@ services:
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../prometheus/rules:/etc/prometheus/rules:ro
+      - genrules:/etc/prometheus/generated:ro   # rule render bởi alerting BC
       - promdata:/prometheus
     ports:
       - "9090:9090"
@@ -335,6 +352,7 @@ services:
 
 volumes:
   pgdata:
+  genrules:   # rule file alerting BC render → Prometheus đọc (rule sync pipeline)
   promdata:
   grafanadata:
   esdata:
