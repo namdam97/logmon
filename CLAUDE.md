@@ -170,6 +170,18 @@ PipelineModeChanged → AlertingService.UpdatePipelineAlerts()
 - `doc_v2/` — Tài liệu thiết kế chi tiết (source of truth): 00-tong-quan · 01-kien-truc-tong-the · 02-backend-architecture · 03-logs-pipeline · 04-metrics-tracing · 05-alerting-slo · 06-incident-notification · 07-api-specification · 08-database-schema · 09-security · 10-deployment-operations · 11-coding-testing-standards · 12-roadmap · 13-adr · 14-frontend-architecture · 15-devsecops-cicd · 16-iac-runbooks · 17-ai-incident-automation
 - `README.md` — Tổng quan + quick start cho thành viên mới
 
+## Dev Rituals (ECC slash commands)
+
+Nghi thức dev mượn ý tưởng từ gstack nhưng triển khai ECC-native trong `.claude/commands/`
+(KHÔNG cài chồng gstack — tránh đụng `/review` và context bloat):
+
+- **`/qa-fe`** — browser-QA *thường trú* cho FE: lái `ecc:e2e-runner` chạy Playwright, phân loại
+  lỗi thật/flaky/môi trường, đề xuất fix tối thiểu. Phần "thường trú" = CI job `e2e` (gọi `make e2e`).
+- **`/retro`** — sprint retrospective → postmortem có cấu trúc vào `doc_v2/retros/`. Mục đích kép:
+  chuẩn hoá vòng dev + **seed corpus cho RAG GĐ5** (`doc_v2/17`). Dogfood postmortem trước khi AI tự động hoá.
+- **`/cso`** — checklist bảo mật *định kỳ* (hàng quý, `doc_v2/10` §6): lái `ecc:security-reviewer` +
+  tổng hợp gates (govulncheck/gitleaks/Trivy ADR-044, OWASP `doc_v2/09`).
+
 ## Frontend Design Skills
 
 - **`taste-skill`** (vendored, MIT — `.claude/skills/taste-skill/`): anti-slop frontend taste cho
