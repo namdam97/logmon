@@ -26,7 +26,7 @@ LogMon giải quyết bằng vòng khép kín: **Thu thập → Lưu trữ → P
 | Trụ cột | Trả lời câu hỏi | Công nghệ | Cách thu thập |
 |---------|-----------------|-----------|---------------|
 | **Metrics** | "CÓ vấn đề không?" (số liệu, xu hướng) | Prometheus 3.x + Thanos | PULL — scrape `/metrics` |
-| **Logs** | "Vấn đề LÀ GÌ?" (chi tiết sự kiện) | OTel Collector → Elasticsearch 9.x | PUSH — stdout JSON → collector |
+| **Logs** | "Vấn đề LÀ GÌ?" (chi tiết sự kiện) | OTel Collector → Elasticsearch 9.4.x | PUSH — stdout JSON → collector |
 | **Traces** | "Vấn đề Ở ĐÂU?" (đường đi request) | OTel SDK → Jaeger v2 | PUSH — OTLP gRPC |
 
 **Correlation** là giá trị cốt lõi: `trace_id` xuyên suốt cả 3 trụ cột → từ metric spike click sang logs, từ log click sang trace waterfall.

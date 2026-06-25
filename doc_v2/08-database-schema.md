@@ -1,6 +1,6 @@
 # 08 — Database Schema (PostgreSQL 18)
 
-> Migrations bằng **pressly/goose** (`backend/migrations/`, đánh số tuần tự — repo đã có `0001_create_users.sql`). Mọi bảng tenant-scoped có `workspace_id` + composite index. Schema giới thiệu theo giai đoạn — chỉ migrate khi BC tương ứng được build.
+> Migrations bằng **golang-migrate** (`backend/migrations/`, container `migrate/migrate:v4.18.1`, định dạng `NNNNNN_name.up/down.sql` — repo đã có `000001_init`, `000002_outbox`, `000003_alert_rules`). Mọi bảng tenant-scoped có `workspace_id` + composite index. Schema giới thiệu theo giai đoạn — chỉ migrate khi BC tương ứng được build.
 
 ---
 

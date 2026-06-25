@@ -7,7 +7,7 @@
 ## 1. Docker Compose Production Practices
 
 ```yaml
-# infra/docker/compose.yaml (trích — pattern chuẩn cho mọi service)
+# infra/docker/docker-compose.yml (trích — pattern chuẩn cho mọi service)
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.4.2   # pin minor, KHÔNG :latest
@@ -53,7 +53,7 @@ Quy tắc bắt buộc:
 4. Named volumes cho mọi data (ES, Prometheus, Postgres, Kafka, Grafana).
 5. Secrets: Compose `secrets:` file-based cho credentials; `env_file` chỉ cho config không nhạy cảm; `.env` không commit.
 6. Network segmentation: `backend` internal-only; chỉ reverse proxy + frontend ở `frontend`.
-7. Tách `compose.yaml` (base) + `compose.prod.yaml` (override: limits, logging driver, TLS) — không dùng dev config cho prod.
+7. Tách `docker-compose.yml` (base) + `docker-compose.prod.yml` (override: limits, logging driver, TLS) — không dùng dev config cho prod (ADR-040).
 8. Profiles: `scale` (Kafka, Thanos, ES nodes 2-3), `demo` (demo-order workload).
 
 ---

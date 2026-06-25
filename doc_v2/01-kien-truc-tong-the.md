@@ -20,13 +20,13 @@
 | Log/trace collector | OpenTelemetry Collector (contrib) | **v0.154+** | Agent + Gateway pattern; thay thế Filebeat + Logstash |
 | Message buffer | Apache Kafka | **4.3** (KRaft-only) | Mode B only; không còn ZooKeeper |
 | Tracing backend | Jaeger | **v2.19** | Nền OTel Collector; v1 EOL 31/12/2025 |
-| Visualization | Grafana | **12.3.x** | Lên 13.x khi 13.1 ra (Git Sync GA) |
+| Visualization | Grafana | **13.1.x** | Git Sync GA (v13, 21/04/2026); 13.1.0 ra 23/06/2026 |
 | Object storage | Cloud S3 / Backblaze B2 (ưu tiên) hoặc SeaweedFS (on-prem) | — | Thay MinIO (ADR-021) |
 | Frontend | Next.js | **16.2** (React 19.2) | `output: 'standalone'`, App Router |
 | Frontend runtime | Node.js | **24 LTS** | |
 | Reverse proxy | Nginx (hiện tại) / Caddy (khuyến nghị mới) | — | Caddy tự động TLS, giảm ops |
 | Container | Docker Compose (dev/prod nhỏ) → Kubernetes (scale) | — | kube-prometheus-stack 86.x, ECK 3.4, Strimzi 1.0 |
-| Migrations | pressly/goose | latest | SQL + Go migrations |
+| Migrations | golang-migrate (`migrate/migrate`) | v4.18.1 | SQL migrations, định dạng `NNNNNN_name.up/down.sql` |
 | Lint | golangci-lint | **v2.x** | Config v2 format |
 
 Thư viện Go chính: `pgx/v5`, `go-redis/v9`, `sony/gobreaker/v2`, `go-playground/validator/v10`, `golang-jwt/jwt/v5`, `go-redis/redis_rate/v10` (GCRA), `golang.org/x/crypto/argon2`, OTel: `otelgin`, `exaring/otelpgx`, `redisotel/v9`.
@@ -71,7 +71,7 @@ graph TB
     end
 
     subgraph Viz["📈 Visualization"]
-        GF["Grafana 12.3<br/>(single pane)"]
+        GF["Grafana 13.1<br/>(single pane)"]
         FE["Next.js 16 Dashboard"]
     end
 
@@ -202,13 +202,13 @@ logmon/
 │   │   ├── notification/          ← (Clean Arch) — GĐ 3
 │   │   └── shared/                ← auth, errors, logger, metrics, middleware,
 │   │                                 tracing, resilience, eventbus(outbox), httpx
-│   ├── migrations/                ← goose SQL migrations
+│   ├── migrations/                ← golang-migrate SQL migrations
 │   └── Makefile / Dockerfile / .golangci.yml
 ├── frontend/                      ← Next.js 16 dashboard
 ├── examples/
 │   └── demo-order/                ← demo workload instrument đầy đủ (ADR-029)
 ├── infra/
-│   ├── docker/                    ← compose.yaml + compose.prod.yaml + profiles
+│   ├── docker/                    ← docker-compose.yml + docker-compose.prod.yml + profiles
 │   ├── otel/                      ← agent.yaml, gateway.yaml
 │   ├── prometheus/                ← prometheus.yml, rules/ (generated + static)
 │   ├── alertmanager/              ← alertmanager.yml
