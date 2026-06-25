@@ -1,7 +1,7 @@
 # LogMon — Tài Liệu Thiết Kế v2 (Production-Ready)
 
 > **Phiên bản:** 2.0 — 2026-06-11
-> **Thay thế:** `doc/logmon.md` v1 (2026-04-02) và các tài liệu liên quan
+> **Thay thế:** `doc/logmon.md` v1 (2026-04-02, đã gỡ khỏi repo — xem git history) và các tài liệu liên quan
 > **Cơ sở:** Toàn bộ thay đổi so với v1 đều dựa trên research best practices production tính đến 06/2026, có nguồn kiểm chứng (xem `13-adr.md`).
 
 ---
@@ -18,14 +18,20 @@
 | 05 | [05-alerting-slo.md](05-alerting-slo.md) | Alerting BC, rule sync, Alertmanager, SLO engine, burn-rate, meta-monitoring | Triển khai alerting |
 | 06 | [06-incident-notification.md](06-incident-notification.md) | Incident lifecycle, on-call, Notification Hub | Giai đoạn 3 |
 | 07 | [07-api-specification.md](07-api-specification.md) | API conventions, response envelope, endpoint catalog (đánh dấu theo giai đoạn) | Trước khi code API |
-| 08 | [08-database-schema.md](08-database-schema.md) | PostgreSQL schema, migrations (goose), ERD | Trước khi code backend |
+| 08 | [08-database-schema.md](08-database-schema.md) | PostgreSQL schema, migrations (golang-migrate), ERD | Trước khi code backend |
 | 09 | [09-security.md](09-security.md) | AuthN/Z, argon2id, JWT + refresh rotation, CSRF, tenancy isolation, OWASP | Trước khi code auth |
 | 10 | [10-deployment-operations.md](10-deployment-operations.md) | Docker Compose production, CI/CD, backup/DR, capacity, đường lên K8s | Triển khai hạ tầng |
 | 11 | [11-coding-testing-standards.md](11-coding-testing-standards.md) | Go style (delta so CLAUDE.md), testing strategy, coverage | Trước khi code |
-| 12 | [12-roadmap.md](12-roadmap.md) | Lộ trình 4 giai đoạn, map với trạng thái repo hiện tại, Definition of Done | Lập kế hoạch |
+| 12 | [12-roadmap.md](12-roadmap.md) | Lộ trình 5 giai đoạn, map với trạng thái repo hiện tại, Definition of Done | Lập kế hoạch |
 | 13 | [13-adr.md](13-adr.md) | Toàn bộ ADR: giữ nguyên / cập nhật / mới (kèm nguồn research) | Hiểu quyết định |
+| 14 | [14-frontend-architecture.md](14-frontend-architecture.md) | Kiến trúc FE (Next.js admin UI): phân tầng, data layer, auth/RBAC, màn hình theo giai đoạn, ranh giới với Grafana | Trước khi code frontend |
+| 15 | [15-devsecops-cicd.md](15-devsecops-cicd.md) | CI/CD pipeline (hiện trạng `ci.yml` + mục tiêu), security gates tự động, supply-chain, secret rotation, môi trường/deploy/rollback | Trước khi đụng CI/CD & release |
+| 16 | [16-iac-runbooks.md](16-iac-runbooks.md) | Infrastructure-as-Code (cấu trúc `infra/`, compose, config-as-code, đường lên K8s) + runbook cho 8 alert nền & quy trình vận hành | Triển khai hạ tầng & vận hành |
+| 17 | [17-ai-incident-automation.md](17-ai-incident-automation.md) | GĐ5: AI hỗ trợ chẩn đoán sự cố (RCA) + RAG runbook/postmortem, human-in-the-loop, giảm MTTR | Giai đoạn 5 |
 
-**Thứ tự đọc đề xuất:** 00 → 01 → 12 (nắm lộ trình) → 02 → file chuyên đề theo giai đoạn đang làm.
+**Thứ tự đọc đề xuất:** 00 → 01 → 12 (nắm lộ trình) → 02 → file chuyên đề theo giai đoạn đang làm (backend: 03-09; frontend: 14; CI/CD & hạ tầng: 15-16; AI xử lý sự cố/GĐ5: 17).
+
+> **Quy ước trạng thái trong 14-16:** ✅ đã có trong repo · 📐 đã chốt trong doc_v2 (chưa triển khai) · ⬜ khoảng trống chưa quyết (cần ADR). Đây là tài liệu tham chiếu khi triển khai — không trình bày thứ chưa quyết như đã quyết.
 
 ---
 
@@ -46,9 +52,9 @@
 | 9 | Alerting BC tự quản lý rule (mơ hồ cách sync) | **Pipeline rõ ràng**: DB → render YAML → `promtool check` → atomic write → `POST /-/reload` | Prometheus không có (và sẽ không có) API ghi rule → ADR-024 |
 | 10 | Không có meta-monitoring | **Watchdog deadman-switch** → healthchecks.io + external uptime check | "Ai canh người canh gác" — pattern chuẩn kube-prometheus → ADR-026 |
 | 11 | `order/`, `user/` là BC demo lẫn trong platform | **Tách bạch**: `identity/` là BC platform thật; demo workload chuyển sang `examples/` | Platform và sample app không được lẫn nhau → ADR-029 |
-| 12 | Scope dàn trải (8 BC, ~80 endpoints cùng lúc) | **Lộ trình 4 giai đoạn** với Definition of Done, map với repo hiện tại | Triển khai được thực tế — xem `12-roadmap.md` |
+| 12 | Scope dàn trải (8 BC, ~80 endpoints cùng lúc) | **Lộ trình 5 giai đoạn** với Definition of Done, map với repo hiện tại | Triển khai được thực tế — xem `12-roadmap.md` |
 | 13 | Spanmetrics processor | **Spanmetrics connector** (+ exemplars) | Processor đã bị gỡ khỏi OTel Collector contrib |
-| 14 | Versions: Go 1.22, Grafana 10.4, ES 8.x... | **Pinned 06/2026**: Go 1.26, ES 9.4.2, Kafka 4.3, Prometheus 3.12, Grafana 12.3.x, Next.js 16.2 | Bảng version đầy đủ trong `01-kien-truc-tong-the.md` |
+| 14 | Versions: Go 1.22, Grafana 10.4, ES 8.x... | **Pinned 06/2026**: Go 1.26, ES 9.4.2, Kafka 4.3, Prometheus 3.12, Grafana 13.1.x, Next.js 16.2 | Bảng version đầy đủ trong `01-kien-truc-tong-the.md` |
 
 **Những gì v1 đã đúng và v2 giữ nguyên:** Thanos sidecar pattern (research xác nhận vẫn là best practice), Prometheus PULL model, Clean Arch + DDD + CQRS cho BC phức tạp, transactional outbox, workspace multi-tenancy, Grafana single pane, tail sampling policies, ELK thay Loki (full-text search), 2 deployment modes.
 

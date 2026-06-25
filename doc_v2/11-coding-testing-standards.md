@@ -15,7 +15,7 @@
 | Logging | zerolog wrapper | Giữ zerolog (nhanh nhất) + **hook inject trace_id/span_id** từ `trace.SpanContextFromContext(ctx)` | OTel Go Logs còn Beta; slog-bridge của zerolog chậm |
 | JWT | (chưa quy định lib) | **golang-jwt/jwt/v5**, pin algorithm, validate iss/aud | RFC 8725 |
 | Rate limit | (tự viết sliding window) | **go-redis/redis_rate/v10** (GCRA) | Atomic Lua, chính xác hơn, không tự viết |
-| Migrations | (chưa quy định) | **pressly/goose**, đánh số tuần tự, zero-downtime rules (08) | |
+| Migrations | (chưa quy định) | **golang-migrate** (`migrate/migrate` container), định dạng `NNNNNN_name.up/down.sql`, zero-downtime rules (08) | |
 | OTel instrumentation | (chưa có) | `otelgin`, `exaring/otelpgx`, `redisotel/v9` | Official/registry-listed |
 | CI security | (chưa có) | `govulncheck` + `gitleaks` bắt buộc trong CI | |
 

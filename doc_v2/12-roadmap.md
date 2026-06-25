@@ -1,6 +1,6 @@
 # 12 — Lộ Trình Triển Khai
 
-> v1 mô tả hệ thống đích nhưng không có đường đi khả thi (8 BC, ~80 endpoints cùng lúc). v2 chia **4 giai đoạn**, mỗi giai đoạn có Definition of Done đo được, và **map với trạng thái repo hiện tại** (2026-06-11).
+> v1 mô tả hệ thống đích nhưng không có đường đi khả thi (8 BC, ~80 endpoints cùng lúc). v2 chia **5 giai đoạn**, mỗi giai đoạn có Definition of Done đo được, và **map với trạng thái repo hiện tại** (2026-06-11). GĐ5 (AI-assisted incident automation) bổ sung 2026-06-23 — chi tiết `17-ai-incident-automation.md`.
 
 ---
 
@@ -10,7 +10,7 @@
 |----------|-----------|
 | `shared/` kernel: errors, logger (zerolog), httpx, metrics, middleware (recovery/logging/metrics/ratelimit), auth (JWT) | ✅ Có + tests |
 | `internal/user/` (→ sẽ thành `identity/`): domain + app + postgres + http, register/login/logout | ✅ Có + tests |
-| Migrations: `0001_create_users.sql` (goose-style) | ✅ |
+| Migrations: `000001_init.up/down.sql` (golang-migrate) | ✅ |
 | Frontend: Next.js + shadcn/ui — login, dashboard shell, profile, auth guard, Playwright e2e | ✅ |
 | `infra/docker/docker-compose.yml`: postgres + backend + frontend | ✅ Cơ bản |
 | CI, observability stack (Prometheus/ES/Grafana/OTel), alerting | ❌ Chưa có |
@@ -28,7 +28,7 @@
 | 1.1 | CI pipeline (GH Actions): test + lint v2 + govulncheck + gitleaks + build images | Làm ĐẦU TIÊN — mọi thứ sau đi qua CI |
 | 1.2 | Hoàn thiện instrument backend: metrics middleware expose `/metrics`, health/ready chuẩn | Một phần đã có |
 | 1.3 | `examples/demo-order/`: service mẫu instrument đầy đủ + traffic generator (k6/script) | Nguồn telemetry để test platform |
-| 1.4 | Compose: Prometheus 3.12 + exporters (node/postgres/redis) + Grafana 12.3 provisioned | |
+| 1.4 | Compose: Prometheus 3.12 + exporters (node/postgres/redis) + Grafana 13.1 provisioned | |
 | 1.5 | Compose: Elasticsearch 9.4 (1 node, security ON) + OTel Collector agent→gateway, data stream `logs-*` + ILM policy + index template | Pipeline logs Mode A — KHÔNG Filebeat/Logstash |
 | 1.6 | Alertmanager + bộ static rules nền (05 mục 3) + Slack receiver + **Watchdog → healthchecks.io** | Meta-monitoring ngay từ GĐ1 |
 | 1.7 | Grafana dashboards: service-overview, logs-explorer, infrastructure, pipeline-health | JSON as-code |
@@ -105,6 +105,29 @@
 | 4.6 | (Tùy chọn) Kubernetes migration theo 10 mục 7 |
 
 **DoD GĐ4:** Load test 10K logs/s duy trì 1h không mất log (đếm end-to-end); kill gateway 5 phút → Kafka buffer replay đủ; SLO 28d chạy trên Thanos; restore drill pass.
+
+---
+
+## Giai Đoạn 5 — AI-Assisted Incident Automation
+
+**Mục tiêu:** Giảm MTTR bằng AI hỗ trợ chẩn đoán (RCA) + RAG runbook/postmortem, ở mức **human-in-the-loop (trần L2)** — "AI proposes, human approves, AI executes". Phụ thuộc GĐ3 (incident BC), hưởng lợi từ độ chín vận hành GĐ4. Thiết kế đầy đủ: `17-ai-incident-automation.md`.
+
+| # | Hạng mục |
+|---|----------|
+| 5.0 | Telemetry-readiness: OTel semconv chặt + trace_id→log + exemplars + topology attrs (tiền đề bắt buộc) |
+| 5.1 | Read-only RCA assistant (L1): agent điều tra qua MCP (Prometheus/Thanos · ES · Jaeger) → post RCA + dẫn chứng vào Slack/incident BC; KHÔNG hành động |
+| 5.2 | RAG runbook/postmortem (docs-as-code, hybrid + GraphRAG, citations) + tự sinh nháp postmortem (human-review) |
+| 5.3 | Correlation/dedup alert + chỉ trigger agent trên burn-rate breach (ADR-034) |
+| 5.4 | Gợi ý remediation có cổng (L2): đề xuất bước khắc phục (dry-run, idempotent); người duyệt & thực thi |
+
+**Lõi:** framework có sẵn (HolmesGPT engine + WeKnora/pgvector RAG) nối qua MCP — service Python tách khỏi Go core (ADR-031…035).
+
+**DoD GĐ5:**
+- [ ] Alert burn-rate fire → agent tự điều tra read-only → RCA có citation + confidence trong incident BC/Slack ≤ vài phút; KHÔNG có hành động tự động
+- [ ] RAG trả runbook đúng kèm citation; sự cố quá khứ tương tự được truy hồi
+- [ ] Postmortem nháp sinh từ artifact (timeline/chat), human-review bắt buộc
+- [ ] Eval: golden replay suite gate merge; đo agreement-rate/false-RCA; telemetry được sanitize trước LLM
+- [ ] Mọi hành động thay đổi hệ thống đều sau phê duyệt người (không closed-loop)
 
 ---
 

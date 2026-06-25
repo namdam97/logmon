@@ -143,9 +143,9 @@ Kết quả: RED metrics (`duration`, `calls`) per service/endpoint tự động
 
 | Mục | Quyết định |
 |-----|-----------|
-| Version | 12.3.x (lên 13.x sau 13.1) |
+| Version | 13.1.x (Git Sync GA từ v13; 13.1.0 ra 23/06/2026) |
 | Datasources (provisioned) | Prometheus (Mode A) / Thanos Query (Mode B), Elasticsearch, Jaeger |
-| Dashboards-as-code | JSON trong `infra/grafana/dashboards/`, provisioning tự load; mọi thay đổi qua git (Grafana 13 Git Sync khi nâng cấp) |
+| Dashboards-as-code | JSON trong `infra/grafana/dashboards/`, provisioning tự load; mọi thay đổi qua git (Grafana 13 Git Sync GA — dùng được ngay) |
 | Auth | Grafana đứng sau reverse proxy; tài khoản riêng (GĐ1) — SSO/proxy auth từ LogMon là việc tương lai |
 
 Dashboard chuẩn theo persona (giữ từ v1):

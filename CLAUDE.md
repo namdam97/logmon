@@ -6,18 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 LogMon là nền tảng observability (logging + monitoring) cho Go microservices. Backend áp dụng **2 mô hình kiến trúc** tùy theo complexity của domain:
 
-- **Clean Architecture** — cho `order` và `user` services (CRUD-like, domain đơn giản)
+- **Clean Architecture** — cho `identity` (auth/users/workspaces/RBAC) và `notification` (CRUD-like, domain đơn giản). *Repo hiện có `internal/user/` → sẽ đổi thành `identity/`; `order` cũ là demo ở `examples/demo-order/`, không phải BC platform — ADR-029.*
 - **Clean Architecture + DDD + CQRS** — cho `alerting`, `slo`, `logpipeline` (business logic phức tạp)
 
-Tài liệu chi tiết: `doc_v2/` — 14 file thiết kế (00-tong-quan → 13-adr), là source of truth.
+Tài liệu chi tiết: `doc_v2/` — 18 file thiết kế (00-tong-quan → 17-ai-incident-automation), là source of truth.
 
 ## Tech Stack
 
-- **Backend**: Go 1.22+, Gin, zerolog, prometheus/client_golang, pgx/v5, go-redis
-- **Frontend**: Next.js 14+, TypeScript, TailwindCSS, shadcn/ui
-- **Metrics**: Prometheus (PULL) → Alertmanager → Slack/Email
-- **Logs**: Filebeat → Kafka (buffer) → Logstash → Elasticsearch
-- **Visualization**: Grafana 10.4+ (metrics), Next.js dashboard (admin UI)
+- **Backend**: Go 1.26+, Gin, zerolog, prometheus/client_golang, pgx/v5, go-redis
+- **Frontend**: Next.js 16+, TypeScript, TailwindCSS, shadcn/ui
+- **Metrics**: Prometheus (PULL) + Thanos (long-term, Mode B) → Alertmanager → Slack/Email/PagerDuty
+- **Logs**: zerolog → OTel Collector (agent → gateway) → Elasticsearch (data streams + ILM); Kafka buffer chỉ ở Mode B (ADR-018)
+- **Traces**: OpenTelemetry SDK → OTel Collector (tail sampling) → Jaeger v2 (storage Elasticsearch)
+- **Visualization**: Grafana 13.1+ (metrics/logs/traces; Git Sync GA), Next.js dashboard (admin UI)
 - **Infrastructure**: Docker Compose (dev), Kubernetes (prod), Nginx reverse proxy
 
 ## Build & Run Commands
@@ -63,14 +64,17 @@ adapters → ports ← app → domain
 
 | BC | Pattern | Lý do |
 |----|---------|-------|
-| `internal/order/` | Clean Architecture | CRUD, domain đơn giản |
-| `internal/user/` | Clean Architecture | CRUD, domain đơn giản |
+| `internal/identity/` | Clean Architecture | Auth + users + workspaces + RBAC — CRUD + policy, domain đơn giản (repo hiện là `internal/user/`, sẽ đổi tên — ADR-029) |
 | `internal/alerting/` | Clean Arch + DDD + CQRS | Business rules phức tạp: threshold, inhibition, routing, escalation |
 | `internal/slo/` | Clean Arch + DDD + CQRS | Error budget calculation, burn rate, compliance tracking |
 | `internal/logpipeline/` | Clean Arch + DDD + CQRS | Mode switching, DLQ retry, ILM policy management |
+| `internal/incident/` | Clean Arch + DDD + CQRS | State machine 7 trạng thái, severity SEV1-4, MTTA/MTTR, on-call rotation, escalation, postmortem (GĐ3) |
+| `internal/notification/` | Clean Architecture | Hub đa kênh (Slack/Email/PagerDuty/Teams/webhook/in-app), template, retry/queue — domain đơn giản (GĐ3) |
 | `internal/shared/` | Shared Kernel | Auth, errors, logger, metrics middleware, event bus |
 
-### Clean Architecture Layers (order, user)
+> **GĐ5 (AI incident automation):** lớp AI là **service Python độc lập** (HolmesGPT + WeKnora), **ngoài Go core** — tích hợp qua MCP/webhook/event, KHÔNG cross-BC import, KHÔNG vi phạm layer direction. Xem `doc_v2/17-ai-incident-automation.md` + ADR-032. `order` cũ → `examples/demo-order/` (demo, không phải BC).
+
+### Clean Architecture Layers (identity, notification)
 
 ```
 domain/       — entities, value objects, domain errors
@@ -142,7 +146,7 @@ adapters/     — implementations + infrastructure adapters (Prometheus, Slack, 
 
 - **Input validation**: `go-playground/validator/v10` cho tất cả request structs
 - **Parameterized queries**: LUÔN dùng `$1, $2` (pgx), KHÔNG string concatenation
-- **Auth**: bcrypt cho passwords, JWT với `HttpOnly + Secure + SameSite` cookies
+- **Auth**: argon2id cho passwords (ADR-022; bcrypt là legacy — migrate ở GĐ2), JWT `HttpOnly + Secure + SameSite` + refresh rotation (ADR-023)
 - **Errors to users**: generic messages only, log chi tiết internally
 - **HTTP headers**: HSTS, X-Content-Type-Options, X-Frame-Options trên mọi response
 - **TLS**: MinVersion TLS 1.2, `InsecureSkipVerify: false` ALWAYS
@@ -163,7 +167,7 @@ PipelineModeChanged → AlertingService.UpdatePipelineAlerts()
 
 ## Key Documentation
 
-- `doc_v2/` — Tài liệu thiết kế chi tiết (source of truth): 00-tong-quan · 01-kien-truc-tong-the · 02-backend-architecture · 03-logs-pipeline · 04-metrics-tracing · 05-alerting-slo · 06-incident-notification · 07-api-specification · 08-database-schema · 09-security · 10-deployment-operations · 11-coding-testing-standards · 12-roadmap · 13-adr
+- `doc_v2/` — Tài liệu thiết kế chi tiết (source of truth): 00-tong-quan · 01-kien-truc-tong-the · 02-backend-architecture · 03-logs-pipeline · 04-metrics-tracing · 05-alerting-slo · 06-incident-notification · 07-api-specification · 08-database-schema · 09-security · 10-deployment-operations · 11-coding-testing-standards · 12-roadmap · 13-adr · 14-frontend-architecture · 15-devsecops-cicd · 16-iac-runbooks · 17-ai-incident-automation
 - `README.md` — Tổng quan + quick start cho thành viên mới
 
 ## Frontend Design Skills
