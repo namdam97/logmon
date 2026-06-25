@@ -116,10 +116,11 @@ func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 	enableRule := command.NewSetRuleEnabledHandler(txm, repo, repo, publisher, clock)
 	handler := alertinghttp.NewHandler(createRule, updateRule, deleteRule, enableRule, query.NewRuleQueries(repo), _defaultWorkspaceID)
 
-	// Webhook receiver: Alertmanager → upsert alert_instances (GĐ2.3).
+	// Webhook receiver: Alertmanager → upsert alert_instances (GĐ2.3) + ack (GĐ2.4).
 	instanceRepo := alertingpg.NewInstanceRepository(pool)
 	ingest := command.NewIngestWebhookHandler(txm, instanceRepo, ids, clock)
-	instanceHandler := alertinghttp.NewInstanceHandler(ingest, instanceRepo, _defaultWorkspaceID)
+	acknowledge := command.NewAcknowledgeHandler(txm, instanceRepo, instanceRepo, clock)
+	instanceHandler := alertinghttp.NewInstanceHandler(ingest, acknowledge, instanceRepo, _defaultWorkspaceID)
 
 	bus := outbox.NewBus()
 	resync := func(ctx context.Context, _ outbox.Event) error { return syncer.Sync(ctx) }

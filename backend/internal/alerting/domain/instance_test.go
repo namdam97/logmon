@@ -102,6 +102,69 @@ func TestAlertInstance_ResolveIsImmutable(t *testing.T) {
 	require.True(t, inst.ResolvedAt().IsZero())
 }
 
+func TestAlertInstance_AcknowledgeIsImmutable(t *testing.T) {
+	inst, err := domain.NewFiringInstance(validFiringInput(t))
+	require.NoError(t, err)
+	at := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+	const by = "22222222-2222-2222-2222-222222222222"
+
+	acked, err := inst.Acknowledge(by, at)
+
+	require.NoError(t, err)
+	require.Equal(t, domain.InstanceAcknowledged, acked.Status())
+	require.Equal(t, at, acked.AcknowledgedAt())
+	require.Equal(t, by, acked.AcknowledgedBy())
+	// Bản gốc không đổi (immutability).
+	require.Equal(t, domain.InstanceFiring, inst.Status())
+	require.True(t, inst.AcknowledgedAt().IsZero())
+	require.Empty(t, inst.AcknowledgedBy())
+}
+
+func TestAlertInstance_AcknowledgeRequiresFiring(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+	const by = "22222222-2222-2222-2222-222222222222"
+
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T) domain.AlertInstance
+	}{
+		{
+			name: "already resolved",
+			prepare: func(t *testing.T) domain.AlertInstance {
+				inst, err := domain.NewFiringInstance(validFiringInput(t))
+				require.NoError(t, err)
+				return inst.Resolve(at)
+			},
+		},
+		{
+			name: "already acknowledged",
+			prepare: func(t *testing.T) domain.AlertInstance {
+				inst, err := domain.NewFiringInstance(validFiringInput(t))
+				require.NoError(t, err)
+				acked, err := inst.Acknowledge(by, at)
+				require.NoError(t, err)
+				return acked
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.prepare(t).Acknowledge(by, at)
+			require.ErrorIs(t, err, domain.ErrInstanceNotAcknowledgeable)
+		})
+	}
+}
+
+func TestAlertInstance_AcknowledgeRequiresActor(t *testing.T) {
+	inst, err := domain.NewFiringInstance(validFiringInput(t))
+	require.NoError(t, err)
+
+	_, err = inst.Acknowledge("", time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC))
+
+	var ve *domain.ValidationError
+	require.True(t, errors.As(err, &ve))
+}
+
 func TestAlertInstance_LabelsCopiedOnRead(t *testing.T) {
 	inst, err := domain.NewFiringInstance(validFiringInput(t))
 	require.NoError(t, err)

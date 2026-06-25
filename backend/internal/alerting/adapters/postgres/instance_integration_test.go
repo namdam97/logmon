@@ -6,6 +6,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -67,6 +68,48 @@ func TestInstanceRepository_ResolveRemovesFromActive(t *testing.T) {
 
 	// Resolve lặp cho fingerprint đã resolved → no-op, không lỗi.
 	require.NoError(t, repo.Resolve(ctx, ws, "fp-2", time.Now().UTC()))
+}
+
+func TestInstanceRepository_AcknowledgePersistsAndStaysActive(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+	repo := postgres.NewInstanceRepository(pool)
+	ws := uuid.NewString()
+	actor := uuid.NewString()
+	firedAt := time.Now().UTC().Truncate(time.Millisecond)
+	ackedAt := firedAt.Add(30 * time.Minute)
+
+	inst := firingInstance(t, ws, "fp-ack", firedAt)
+	require.NoError(t, repo.UpsertFiring(ctx, inst))
+
+	loaded, err := repo.ByID(ctx, ws, inst.ID())
+	require.NoError(t, err)
+	require.Equal(t, domain.InstanceFiring, loaded.Status())
+
+	acked, err := loaded.Acknowledge(actor, ackedAt)
+	require.NoError(t, err)
+	require.NoError(t, repo.Acknowledge(ctx, acked))
+
+	got, err := repo.ByID(ctx, ws, inst.ID())
+	require.NoError(t, err)
+	require.Equal(t, domain.InstanceAcknowledged, got.Status())
+	require.Equal(t, actor, got.AcknowledgedBy())
+	require.Equal(t, ackedAt, got.AcknowledgedAt())
+
+	// acknowledged vẫn nằm trong active (chưa resolved).
+	active, err := repo.ListActive(ctx, ws)
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+	require.Equal(t, domain.InstanceAcknowledged, active[0].Status())
+}
+
+func TestInstanceRepository_ByIDNotFound(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewInstanceRepository(pool)
+
+	_, err := repo.ByID(context.Background(), uuid.NewString(), uuid.NewString())
+
+	require.True(t, errors.Is(err, domain.ErrInstanceNotFound))
 }
 
 func TestInstanceRepository_ListActiveScopedByWorkspace(t *testing.T) {

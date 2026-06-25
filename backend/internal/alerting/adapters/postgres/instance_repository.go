@@ -3,16 +3,18 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/namdam97/logmon/backend/internal/alerting/domain"
 	"github.com/namdam97/logmon/backend/internal/alerting/ports"
 )
 
-const instanceColumns = `id, workspace_id, fingerprint, status, fired_at, resolved_at, labels`
+const instanceColumns = `id, workspace_id, fingerprint, status, fired_at, acknowledged_at, acknowledged_by, resolved_at, labels`
 
 // InstanceRepository lưu + đọc alert instance (nhận từ Alertmanager webhook).
 type InstanceRepository struct {
@@ -65,6 +67,35 @@ func (r *InstanceRepository) Resolve(ctx context.Context, workspaceID, fingerpri
 	return nil
 }
 
+// Acknowledge persist trạng thái acknowledged (status + acknowledged_at/by) cho
+// một instance trong workspace. Idempotent ở tầng SQL — chỉ cập nhật theo id.
+func (r *InstanceRepository) Acknowledge(ctx context.Context, inst domain.AlertInstance) error {
+	const q = `UPDATE alert_instances
+		SET status = $3, acknowledged_at = $4, acknowledged_by = $5
+		WHERE id = $1 AND workspace_id = $2`
+	_, err := dbFrom(ctx, r.pool).Exec(ctx, q,
+		inst.ID(), inst.WorkspaceID(), string(inst.Status()),
+		inst.AcknowledgedAt(), inst.AcknowledgedBy())
+	if err != nil {
+		return fmt.Errorf("acknowledge alert instance: %w", err)
+	}
+	return nil
+}
+
+// ByID đọc một instance theo id trong workspace; ErrInstanceNotFound nếu không có.
+func (r *InstanceRepository) ByID(ctx context.Context, workspaceID, id string) (domain.AlertInstance, error) {
+	const q = `SELECT ` + instanceColumns + `
+		FROM alert_instances WHERE id = $1 AND workspace_id = $2`
+	inst, err := scanInstance(dbFrom(ctx, r.pool).QueryRow(ctx, q, id, workspaceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.AlertInstance{}, domain.ErrInstanceNotFound
+	}
+	if err != nil {
+		return domain.AlertInstance{}, fmt.Errorf("get alert instance: %w", err)
+	}
+	return inst, nil
+}
+
 // ListActive trả về các instance chưa resolved của workspace (mới nhất trước).
 func (r *InstanceRepository) ListActive(ctx context.Context, workspaceID string) ([]domain.AlertInstance, error) {
 	const q = `SELECT ` + instanceColumns + `
@@ -95,10 +126,12 @@ func scanInstance(row scanRow) (domain.AlertInstance, error) {
 	var (
 		id, workspaceID, fpRaw, status string
 		firedAt                        time.Time
-		resolvedAt                     *time.Time
+		acknowledgedAt, resolvedAt     *time.Time
+		acknowledgedBy                 *string
 		labelsRaw                      []byte
 	)
-	if err := row.Scan(&id, &workspaceID, &fpRaw, &status, &firedAt, &resolvedAt, &labelsRaw); err != nil {
+	if err := row.Scan(&id, &workspaceID, &fpRaw, &status, &firedAt,
+		&acknowledgedAt, &acknowledgedBy, &resolvedAt, &labelsRaw); err != nil {
 		return domain.AlertInstance{}, err
 	}
 
@@ -110,18 +143,32 @@ func scanInstance(row scanRow) (domain.AlertInstance, error) {
 	if err != nil {
 		return domain.AlertInstance{}, fmt.Errorf("reconstruct labels: %w", err)
 	}
-	resolved := time.Time{}
-	if resolvedAt != nil {
-		resolved = resolvedAt.UTC()
-	}
 
 	return domain.ReconstructInstance(domain.ReconstructInstanceInput{
-		ID:          id,
-		WorkspaceID: workspaceID,
-		Fingerprint: fp,
-		Status:      domain.InstanceStatus(status),
-		FiredAt:     firedAt.UTC(),
-		ResolvedAt:  resolved,
-		Labels:      labels,
+		ID:             id,
+		WorkspaceID:    workspaceID,
+		Fingerprint:    fp,
+		Status:         domain.InstanceStatus(status),
+		FiredAt:        firedAt.UTC(),
+		AcknowledgedAt: derefTime(acknowledgedAt),
+		AcknowledgedBy: derefString(acknowledgedBy),
+		ResolvedAt:     derefTime(resolvedAt),
+		Labels:         labels,
 	}), nil
+}
+
+// derefTime trả về *t (UTC) hoặc zero time nếu nil (cột TIMESTAMPTZ nullable).
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
+
+// derefString trả về *s hoặc rỗng nếu nil (cột nullable).
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

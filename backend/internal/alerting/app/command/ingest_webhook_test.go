@@ -12,12 +12,17 @@ import (
 	"github.com/namdam97/logmon/backend/internal/alerting/domain"
 )
 
-// fakeInstanceRepo ghi nhận lời gọi upsert/resolve.
+// fakeInstanceRepo ghi nhận lời gọi upsert/resolve/acknowledge và phục vụ ByID
+// (implement cả AlertInstanceRepository lẫn AlertInstanceReader như adapter thật).
 type fakeInstanceRepo struct {
 	upserted   []domain.AlertInstance
 	resolved   []string // fingerprint đã resolve
+	acked      []domain.AlertInstance
+	stored     map[string]domain.AlertInstance // id → instance, cho ByID
 	upsertErr  error
 	resolveErr error
+	ackErr     error
+	byIDErr    error
 }
 
 func (r *fakeInstanceRepo) UpsertFiring(_ context.Context, inst domain.AlertInstance) error {
@@ -34,6 +39,29 @@ func (r *fakeInstanceRepo) Resolve(_ context.Context, _, fingerprint string, _ t
 	}
 	r.resolved = append(r.resolved, fingerprint)
 	return nil
+}
+
+func (r *fakeInstanceRepo) Acknowledge(_ context.Context, inst domain.AlertInstance) error {
+	if r.ackErr != nil {
+		return r.ackErr
+	}
+	r.acked = append(r.acked, inst)
+	return nil
+}
+
+func (r *fakeInstanceRepo) ByID(_ context.Context, _, id string) (domain.AlertInstance, error) {
+	if r.byIDErr != nil {
+		return domain.AlertInstance{}, r.byIDErr
+	}
+	inst, ok := r.stored[id]
+	if !ok {
+		return domain.AlertInstance{}, domain.ErrInstanceNotFound
+	}
+	return inst, nil
+}
+
+func (r *fakeInstanceRepo) ListActive(_ context.Context, _ string) ([]domain.AlertInstance, error) {
+	return nil, nil
 }
 
 const wsDefault = "00000000-0000-0000-0000-000000000001"

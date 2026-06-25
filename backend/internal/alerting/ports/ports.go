@@ -38,12 +38,16 @@ type RuleSyncStatusWriter interface {
 type AlertInstanceRepository interface {
 	UpsertFiring(ctx context.Context, inst domain.AlertInstance) error
 	Resolve(ctx context.Context, workspaceID, fingerprint string, at time.Time) error
+	// Acknowledge persist trạng thái acknowledged (status + acknowledged_at/by).
+	Acknowledge(ctx context.Context, inst domain.AlertInstance) error
 }
 
 // AlertInstanceReader là read side (CQRS) cho alert instance.
 type AlertInstanceReader interface {
 	// ListActive trả về các instance chưa resolved (firing|acknowledged).
 	ListActive(ctx context.Context, workspaceID string) ([]domain.AlertInstance, error)
+	// ByID đọc một instance theo id trong workspace; ErrInstanceNotFound nếu không có.
+	ByID(ctx context.Context, workspaceID, id string) (domain.AlertInstance, error)
 }
 
 // RuleReader là read side (CQRS) — truy vấn rule, có thể tối ưu riêng.

@@ -36,13 +36,15 @@ func (f Fingerprint) String() string { return f.value }
 // AlertInstance là một lần firing của alert nhận từ Alertmanager (aggregate
 // alerting BC). Bất biến — mọi thay đổi trả về bản sao mới.
 type AlertInstance struct {
-	id          string
-	workspaceID string
-	fingerprint Fingerprint
-	status      InstanceStatus
-	firedAt     time.Time
-	resolvedAt  time.Time // zero nếu chưa resolved
-	labels      map[string]string
+	id             string
+	workspaceID    string
+	fingerprint    Fingerprint
+	status         InstanceStatus
+	firedAt        time.Time
+	acknowledgedAt time.Time // zero nếu chưa ack
+	acknowledgedBy string    // userID đã ack (rỗng nếu chưa ack)
+	resolvedAt     time.Time // zero nếu chưa resolved
+	labels         map[string]string
 }
 
 // NewFiringInstanceInput gom tham số khởi tạo một instance ở trạng thái firing.
@@ -81,26 +83,48 @@ func NewFiringInstance(in NewFiringInstanceInput) (AlertInstance, error) {
 // ReconstructInstanceInput hydrate một instance từ storage (KHÔNG validate lại
 // — dữ liệu đã hợp lệ khi ghi).
 type ReconstructInstanceInput struct {
-	ID          string
-	WorkspaceID string
-	Fingerprint Fingerprint
-	Status      InstanceStatus
-	FiredAt     time.Time
-	ResolvedAt  time.Time
-	Labels      map[string]string
+	ID             string
+	WorkspaceID    string
+	Fingerprint    Fingerprint
+	Status         InstanceStatus
+	FiredAt        time.Time
+	AcknowledgedAt time.Time
+	AcknowledgedBy string
+	ResolvedAt     time.Time
+	Labels         map[string]string
 }
 
 // ReconstructInstance dựng lại AlertInstance từ dữ liệu đã lưu (read side).
 func ReconstructInstance(in ReconstructInstanceInput) AlertInstance {
 	return AlertInstance{
-		id:          in.ID,
-		workspaceID: in.WorkspaceID,
-		fingerprint: in.Fingerprint,
-		status:      in.Status,
-		firedAt:     in.FiredAt,
-		resolvedAt:  in.ResolvedAt,
-		labels:      copyMap(in.Labels),
+		id:             in.ID,
+		workspaceID:    in.WorkspaceID,
+		fingerprint:    in.Fingerprint,
+		status:         in.Status,
+		firedAt:        in.FiredAt,
+		acknowledgedAt: in.AcknowledgedAt,
+		acknowledgedBy: in.AcknowledgedBy,
+		resolvedAt:     in.ResolvedAt,
+		labels:         copyMap(in.Labels),
 	}
+}
+
+// Acknowledge trả về bản sao đã chuyển sang acknowledged. Chỉ instance đang
+// firing mới ack được (ErrInstanceNotAcknowledgeable cho trạng thái khác); by là
+// userID thực hiện ack, bắt buộc non-empty.
+func (i AlertInstance) Acknowledge(by string, at time.Time) (AlertInstance, error) {
+	if i.status != InstanceFiring {
+		return AlertInstance{}, ErrInstanceNotAcknowledgeable
+	}
+	if by == "" {
+		return AlertInstance{}, newValidationError("acknowledgedBy", "must not be empty")
+	}
+	c := i
+	c.status = InstanceAcknowledged
+	c.acknowledgedAt = at
+	c.acknowledgedBy = by
+	c.labels = copyMap(i.labels)
+	return c, nil
 }
 
 // Resolve trả về bản sao đã chuyển sang trạng thái resolved tại thời điểm at.
@@ -126,6 +150,12 @@ func (i AlertInstance) Status() InstanceStatus { return i.status }
 
 // FiredAt trả về thời điểm alert bắt đầu firing.
 func (i AlertInstance) FiredAt() time.Time { return i.firedAt }
+
+// AcknowledgedAt trả về thời điểm ack (zero nếu chưa ack).
+func (i AlertInstance) AcknowledgedAt() time.Time { return i.acknowledgedAt }
+
+// AcknowledgedBy trả về userID đã ack (rỗng nếu chưa ack).
+func (i AlertInstance) AcknowledgedBy() string { return i.acknowledgedBy }
 
 // ResolvedAt trả về thời điểm resolved (zero nếu chưa resolved).
 func (i AlertInstance) ResolvedAt() time.Time { return i.resolvedAt }
