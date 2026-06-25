@@ -74,6 +74,9 @@ services:
       # Rule sync pipeline (ADR-024): render rule file vào volume chung với Prometheus.
       RULES_DIR: /etc/prometheus/generated
       PROMETHEUS_URL: http://prometheus:9090
+      # Webhook receiver (GĐ2.3): PHẢI khớp secrets/logmon_webhook_token.txt mà
+      # Alertmanager dùng. Rỗng → receiver fail-closed (mọi webhook trả 401).
+      ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-local-dev-webhook-token}
     volumes:
       - genrules:/etc/prometheus/generated
     ports:
@@ -174,6 +177,7 @@ services:
     secrets:
       - slack_webhook_url
       - healthchecks_url
+      - logmon_webhook_token
     ports:
       - "9093:9093"
     healthcheck:
@@ -363,8 +367,13 @@ volumes:
 # Secrets file-based (doc_v2/10 §1) — copy từ *.example và điền URL thật:
 #   cp secrets/slack_webhook_url.txt.example secrets/slack_webhook_url.txt
 #   cp secrets/healthchecks_url.txt.example secrets/healthchecks_url.txt
+#   cp secrets/logmon_webhook_token.txt.example secrets/logmon_webhook_token.txt
+# Lưu ý: nội dung logmon_webhook_token.txt PHẢI khớp ALERTMANAGER_WEBHOOK_TOKEN
+# của userservice (mặc định local: local-dev-webhook-token).
 secrets:
   slack_webhook_url:
     file: ./secrets/slack_webhook_url.txt
   healthchecks_url:
     file: ./secrets/healthchecks_url.txt
+  logmon_webhook_token:
+    file: ./secrets/logmon_webhook_token.txt

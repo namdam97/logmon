@@ -32,6 +32,20 @@ type RuleSyncStatusWriter interface {
 	MarkSyncError(ctx context.Context, message string, now time.Time) error
 }
 
+// AlertInstanceRepository ghi instance nhận từ Alertmanager webhook. UpsertFiring
+// idempotent theo (fingerprint, fired_at) — webhook lặp không tạo bản trùng.
+// Resolve đánh dấu mọi instance đang mở của một fingerprint là resolved.
+type AlertInstanceRepository interface {
+	UpsertFiring(ctx context.Context, inst domain.AlertInstance) error
+	Resolve(ctx context.Context, workspaceID, fingerprint string, at time.Time) error
+}
+
+// AlertInstanceReader là read side (CQRS) cho alert instance.
+type AlertInstanceReader interface {
+	// ListActive trả về các instance chưa resolved (firing|acknowledged).
+	ListActive(ctx context.Context, workspaceID string) ([]domain.AlertInstance, error)
+}
+
 // RuleReader là read side (CQRS) — truy vấn rule, có thể tối ưu riêng.
 type RuleReader interface {
 	ByID(ctx context.Context, id domain.RuleID) (domain.AlertRule, error)

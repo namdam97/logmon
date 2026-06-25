@@ -70,6 +70,7 @@ type config struct {
 	authRateBurst  int
 	rulesDir       string
 	promURL        string
+	webhookToken   string
 }
 
 func loadConfig() config {
@@ -86,13 +87,15 @@ func loadConfig() config {
 		authRateBurst:  envIntOr("AUTH_RATE_BURST", _authRateBurst),
 		rulesDir:       envOr("RULES_DIR", _defaultRulesDir),
 		promURL:        envOr("PROMETHEUS_URL", _defaultPromURL),
+		webhookToken:   os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN"),
 	}
 }
 
 // alertingDeps gom các thành phần alerting BC dựng ở composition root.
 type alertingDeps struct {
-	handler *alertinghttp.Handler
-	relay   *outbox.Relay
+	handler         *alertinghttp.Handler
+	instanceHandler *alertinghttp.InstanceHandler
+	relay           *outbox.Relay
 }
 
 // buildAlerting dựng alerting BC + rule-sync pipeline: rule CRUD ghi event vào
@@ -106,11 +109,17 @@ func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 	clock := alertingsys.NewClock()
 	syncer := promfile.NewSyncer(repo, repo, clock, cfg.rulesDir, cfg.promURL)
 
-	createRule := command.NewCreateRuleHandler(txm, repo, publisher, validator, alertingsys.NewUUIDGenerator(), clock)
+	ids := alertingsys.NewUUIDGenerator()
+	createRule := command.NewCreateRuleHandler(txm, repo, publisher, validator, ids, clock)
 	updateRule := command.NewUpdateRuleHandler(txm, repo, repo, publisher, validator, clock)
 	deleteRule := command.NewDeleteRuleHandler(txm, repo, repo, publisher)
 	enableRule := command.NewSetRuleEnabledHandler(txm, repo, repo, publisher, clock)
 	handler := alertinghttp.NewHandler(createRule, updateRule, deleteRule, enableRule, query.NewRuleQueries(repo), _defaultWorkspaceID)
+
+	// Webhook receiver: Alertmanager → upsert alert_instances (GĐ2.3).
+	instanceRepo := alertingpg.NewInstanceRepository(pool)
+	ingest := command.NewIngestWebhookHandler(txm, instanceRepo, ids, clock)
+	instanceHandler := alertinghttp.NewInstanceHandler(ingest, instanceRepo, _defaultWorkspaceID)
 
 	bus := outbox.NewBus()
 	resync := func(ctx context.Context, _ outbox.Event) error { return syncer.Sync(ctx) }
@@ -118,7 +127,11 @@ func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 	bus.Subscribe(alertingdomain.EventAlertRuleUpdated, resync)
 	bus.Subscribe(alertingdomain.EventAlertRuleDeleted, resync)
 
-	return alertingDeps{handler: handler, relay: outbox.NewRelay(store, bus.Dispatch)}
+	return alertingDeps{
+		handler:         handler,
+		instanceHandler: instanceHandler,
+		relay:           outbox.NewRelay(store, bus.Dispatch),
+	}
 }
 
 // envIntOr đọc một biến môi trường số nguyên dương; rỗng/không hợp lệ → fallback.
@@ -172,8 +185,12 @@ func run() error {
 	alerting := buildAlerting(pool, cfg)
 	go alerting.relay.Run(ctx)
 
-	router := buildRouter(log, mx, svc, alerting.handler, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
-		cfg.authRatePerMin, cfg.authRateBurst)
+	if cfg.webhookToken == "" {
+		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
+	}
+
+	router := buildRouter(log, mx, svc, alerting, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
+		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -209,12 +226,13 @@ func buildRouter(
 	log *logger.Logger,
 	mx *metrics.Metrics,
 	svc *userapp.Service,
-	alertingHandler *alertinghttp.Handler,
+	alerting alertingDeps,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	cookieSecure bool,
 	allowedOrigin string,
 	authRatePerMin, authRateBurst int,
+	webhookToken string,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -245,7 +263,8 @@ func buildRouter(
 	})
 	authRate := middleware.NewPerMinuteLimiter(authRatePerMin, authRateBurst)
 	handler.Register(api, auth.RequireAuth(jwtSvc), authRate.Middleware())
-	alertingHandler.Register(api, auth.RequireAuth(jwtSvc))
+	alerting.handler.Register(api, auth.RequireAuth(jwtSvc))
+	alerting.instanceHandler.Register(api, auth.RequireAuth(jwtSvc), auth.RequireBearerToken(webhookToken))
 	return r
 }
 
