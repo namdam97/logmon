@@ -50,6 +50,18 @@ type AlertInstanceReader interface {
 	ByID(ctx context.Context, workspaceID, id string) (domain.AlertInstance, error)
 }
 
+// SilenceGateway proxy thao tác silence sang Alertmanager (/api/v2/silences).
+// LogMon KHÔNG lưu silence — Alertmanager là source of truth; gateway chỉ tạo/
+// xoá/liệt kê. Native matcher/expiry do Alertmanager đảm nhiệm, không reimplement.
+type SilenceGateway interface {
+	// Create tạo silence mới, trả về silenceID do Alertmanager sinh.
+	Create(ctx context.Context, s domain.Silence) (string, error)
+	// Delete huỷ silence theo id; ErrSilenceNotFound nếu id không tồn tại.
+	Delete(ctx context.Context, id string) error
+	// List trả về mọi silence hiện có (kèm trạng thái) làm read model.
+	List(ctx context.Context) ([]domain.SilenceView, error)
+}
+
 // RuleReader là read side (CQRS) — truy vấn rule, có thể tối ưu riêng.
 type RuleReader interface {
 	ByID(ctx context.Context, id domain.RuleID) (domain.AlertRule, error)

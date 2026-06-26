@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/namdam97/logmon/backend/internal/alerting/adapters/alertmanager"
 	alertinghttp "github.com/namdam97/logmon/backend/internal/alerting/adapters/http"
 	alertingpg "github.com/namdam97/logmon/backend/internal/alerting/adapters/postgres"
 	"github.com/namdam97/logmon/backend/internal/alerting/adapters/promfile"
@@ -49,6 +50,7 @@ const (
 	_defaultWorkspaceID = "00000000-0000-0000-0000-000000000001"
 	_defaultRulesDir    = "/etc/prometheus/generated" // Prometheus mount đọc rule file đã render
 	_defaultPromURL     = "http://prometheus:9090"    // cần --web.enable-lifecycle cho /-/reload
+	_defaultAlertmgrURL = "http://alertmanager:9093"  // proxy silence (GĐ2.4b)
 )
 
 func main() {
@@ -70,6 +72,7 @@ type config struct {
 	authRateBurst  int
 	rulesDir       string
 	promURL        string
+	alertmgrURL    string
 	webhookToken   string
 }
 
@@ -87,6 +90,7 @@ func loadConfig() config {
 		authRateBurst:  envIntOr("AUTH_RATE_BURST", _authRateBurst),
 		rulesDir:       envOr("RULES_DIR", _defaultRulesDir),
 		promURL:        envOr("PROMETHEUS_URL", _defaultPromURL),
+		alertmgrURL:    envOr("ALERTMANAGER_URL", _defaultAlertmgrURL),
 		webhookToken:   os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN"),
 	}
 }
@@ -95,6 +99,7 @@ func loadConfig() config {
 type alertingDeps struct {
 	handler         *alertinghttp.Handler
 	instanceHandler *alertinghttp.InstanceHandler
+	silenceHandler  *alertinghttp.SilenceHandler
 	relay           *outbox.Relay
 }
 
@@ -122,6 +127,13 @@ func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 	acknowledge := command.NewAcknowledgeHandler(txm, instanceRepo, instanceRepo, clock)
 	instanceHandler := alertinghttp.NewInstanceHandler(ingest, acknowledge, instanceRepo, _defaultWorkspaceID)
 
+	// Silence proxy (GĐ2.4b): tạo/xoá/liệt kê silence trên Alertmanager — AM là
+	// source of truth, LogMon không lưu silence và không reimplement matcher/expiry.
+	silenceGW := alertmanager.NewClient(cfg.alertmgrURL)
+	createSilence := command.NewCreateSilenceHandler(silenceGW, clock)
+	deleteSilence := command.NewDeleteSilenceHandler(silenceGW)
+	silenceHandler := alertinghttp.NewSilenceHandler(createSilence, deleteSilence, query.NewSilenceQueries(silenceGW))
+
 	bus := outbox.NewBus()
 	resync := func(ctx context.Context, _ outbox.Event) error { return syncer.Sync(ctx) }
 	bus.Subscribe(alertingdomain.EventAlertRuleCreated, resync)
@@ -131,6 +143,7 @@ func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 	return alertingDeps{
 		handler:         handler,
 		instanceHandler: instanceHandler,
+		silenceHandler:  silenceHandler,
 		relay:           outbox.NewRelay(store, bus.Dispatch),
 	}
 }
@@ -266,6 +279,7 @@ func buildRouter(
 	handler.Register(api, auth.RequireAuth(jwtSvc), authRate.Middleware())
 	alerting.handler.Register(api, auth.RequireAuth(jwtSvc))
 	alerting.instanceHandler.Register(api, auth.RequireAuth(jwtSvc), auth.RequireBearerToken(webhookToken))
+	alerting.silenceHandler.Register(api, auth.RequireAuth(jwtSvc))
 	return r
 }
 

@@ -17,6 +17,8 @@ var (
 	ErrInstanceNotFound = errors.New("alert instance not found")
 	// ErrInstanceNotAcknowledgeable: chỉ instance đang firing mới ack được.
 	ErrInstanceNotAcknowledgeable = errors.New("alert instance is not firing")
+	// ErrSilenceNotFound: silence không tồn tại trên Alertmanager (xoá id lạ).
+	ErrSilenceNotFound = errors.New("silence not found")
 )
 
 // ValidationError mô tả input không hợp lệ trên một field.

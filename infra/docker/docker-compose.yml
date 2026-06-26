@@ -74,6 +74,9 @@ services:
       # Rule sync pipeline (ADR-024): render rule file vào volume chung với Prometheus.
       RULES_DIR: /etc/prometheus/generated
       PROMETHEUS_URL: http://prometheus:9090
+      # Silence proxy (GĐ2.4b): tạo/xoá/liệt kê silence trên Alertmanager. Khi
+      # chạy stack nhẹ (không profile observability), AM chưa lên → /alerts/silences trả 502.
+      ALERTMANAGER_URL: http://alertmanager:9093
       # Webhook receiver (GĐ2.3): PHẢI khớp secrets/logmon_webhook_token.txt mà
       # Alertmanager dùng. Rỗng → receiver fail-closed (mọi webhook trả 401).
       ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-local-dev-webhook-token}
