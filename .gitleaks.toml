@@ -1,0 +1,21 @@
+# Gitleaks config cho LogMon — kế thừa ruleset mặc định + allowlist các false
+# positive đã review thủ công. Secret THẬT luôn nạp qua env/secret manager và
+# KHÔNG commit; các mục dưới đây là hằng test, tên biến Go, và tham chiếu biến
+# môi trường (placeholder dev), không phải bí mật.
+title = "LogMon gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "False positives đã review (không phải secret thật)"
+regexTarget = "match"
+regexes = [
+  # Hằng số dùng cho unit test CSRF — không phải secret production.
+  '''csrf-test-secret-0123456789abcdef''',
+  # Tên hằng Go bị generic-api-key bắt nhầm (giới hạn keyLen của argon2id).
+  '''_argon2MaxKeyLen''',
+  # Tham chiếu biến môi trường trong healthcheck/docs ($$ escape compose; giá
+  # trị thực nạp lúc chạy từ ELASTIC_PASSWORD, không nhúng trong source).
+  '''elastic:\$\$\{?ELASTIC_PASSWORD\}?''',
+]

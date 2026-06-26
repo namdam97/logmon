@@ -1,8 +1,11 @@
 // API client cho LogMon backend. Khớp với response envelope chuẩn:
 // { success, data, error?, meta? }.
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
+// Mặc định rỗng = URL tương đối (same-origin): gọi /api/... trên chính origin
+// của FE, được Next rewrite (dev/e2e) hoặc Nginx (prod) proxy sang userservice.
+// Same-origin là điều kiện để CSRF double-submit hoạt động (JS đọc cookie
+// lm_csrf). Đặt NEXT_PUBLIC_API_BASE_URL nếu muốn gọi thẳng origin khác.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 export interface Envelope<T> {
   success: boolean;

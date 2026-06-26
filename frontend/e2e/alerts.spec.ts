@@ -29,7 +29,10 @@ test("điều hướng tới trang Cảnh báo và render 2 bảng", async ({
   await expect(page).toHaveURL(/\/alerts$/);
   await expect(page.getByRole("heading", { name: "Cảnh báo" })).toBeVisible();
 
-  // Hai khối card luôn hiển thị (kể cả khi rỗng).
-  await expect(page.getByText("Đang kích hoạt")).toBeVisible();
-  await expect(page.getByText("Rule cảnh báo")).toBeVisible();
+  // Hai tiêu đề card luôn hiển thị (kể cả khi rỗng). Dùng exact để không khớp
+  // nhầm phụ đề/empty-state cũng chứa cụm "đang kích hoạt"/"cảnh báo".
+  await expect(
+    page.getByText("Đang kích hoạt", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Rule cảnh báo", { exact: true })).toBeVisible();
 });
