@@ -10,9 +10,9 @@ MIGRATE_DB        := postgres://logmon:$(POSTGRES_PASSWORD)@postgres:5432/logmon
 DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmon?sslmode=disable
 
 .DEFAULT_GOAL := help
-.PHONY: help doctor up up-full up-demo down down-v logs ps db \
+.PHONY: help doctor hooks up up-full up-demo down down-v logs ps db \
         migrate migrate-down seed dev dev-be dev-fe \
-        test test-be test-fe test-integration e2e ci-local fmt lint build clean
+        test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -27,6 +27,11 @@ doctor: ## Kiểm tra toolchain local (docker/compose/go/pnpm/chrome)
 	@pnpm --version >/dev/null 2>&1 && echo "pnpm $$(pnpm --version)" || echo "MISSING: pnpm"
 	@golangci-lint --version 2>/dev/null | head -1 || echo "WARN: golangci-lint (cần cho make lint)"
 	@google-chrome --version 2>/dev/null || echo "WARN: google-chrome (Playwright E2E dùng channel chrome)"
+
+hooks: ## Cài git hooks versioned (.githooks qua core.hooksPath)
+	git config core.hooksPath .githooks
+	@echo "✓ git hooks đã cài (.githooks). pre-commit: gofmt+gitleaks (staged);"
+	@echo "  pre-push: lint+test+govulncheck. Bỏ qua tạm: git commit/push --no-verify."
 
 # ── Stack ───────────────────────────────────────────────────────────────────
 up: ## Dựng stack nhẹ: postgres + migrate + userservice
@@ -108,6 +113,9 @@ fmt: ## gofmt backend
 
 lint: ## golangci-lint backend
 	cd backend && golangci-lint run
+
+vuln: ## govulncheck backend (allowlist dùng chung CI + git hook)
+	./scripts/govulncheck.sh
 
 build: ## Build binary BE + image userservice
 	cd backend && go build ./...
