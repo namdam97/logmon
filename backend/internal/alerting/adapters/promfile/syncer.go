@@ -29,9 +29,11 @@ const (
 	_httpTimeout = 5 * time.Second
 )
 
-// Syncer render + ghi + reload rule file.
+// Syncer render + ghi + reload rule file, rồi ghi lại sync_status vào DB.
 type Syncer struct {
 	reader     ports.RuleReader
+	status     ports.RuleSyncStatusWriter
+	clock      ports.Clock
 	rulesDir   string
 	promURL    string
 	httpClient *http.Client
@@ -40,19 +42,35 @@ type Syncer struct {
 var _ ports.RuleSyncer = (*Syncer)(nil)
 
 // NewSyncer tạo Syncer. rulesDir là thư mục generated (Prometheus mount đọc);
-// promURL là base URL Prometheus (cần --web.enable-lifecycle để /-/reload).
-func NewSyncer(reader ports.RuleReader, rulesDir, promURL string) *Syncer {
+// promURL là base URL Prometheus (cần --web.enable-lifecycle để /-/reload);
+// status ghi lại sync_status sau mỗi lần sync (đóng vòng pipeline).
+func NewSyncer(reader ports.RuleReader, status ports.RuleSyncStatusWriter, clock ports.Clock, rulesDir, promURL string) *Syncer {
 	return &Syncer{
 		reader:     reader,
+		status:     status,
+		clock:      clock,
 		rulesDir:   rulesDir,
 		promURL:    promURL,
 		httpClient: &http.Client{Timeout: _httpTimeout},
 	}
 }
 
-// Sync render mọi rule enabled, validate, ghi atomic, rồi reload Prometheus.
-// Reload thất bại → rollback file về nội dung trước đó.
+// Sync render mọi rule enabled, validate, ghi atomic, reload Prometheus, rồi ghi
+// sync_status vào DB. Bất kỳ bước nào fail → đánh dấu rule sync error.
 func (s *Syncer) Sync(ctx context.Context) error {
+	if err := s.render(ctx); err != nil {
+		// Ghi error vào DB để UI/observability thấy; lỗi gốc vẫn được trả về.
+		_ = s.status.MarkSyncError(ctx, err.Error(), s.clock.Now())
+		return err
+	}
+	if err := s.status.MarkSynced(ctx, s.clock.Now()); err != nil {
+		return fmt.Errorf("persist sync status: %w", err)
+	}
+	return nil
+}
+
+// render thực hiện render→validate→ghi→reload (không chạm DB sync_status).
+func (s *Syncer) render(ctx context.Context) error {
 	rules, err := s.reader.ListAll(ctx)
 	if err != nil {
 		return fmt.Errorf("list rules: %w", err)

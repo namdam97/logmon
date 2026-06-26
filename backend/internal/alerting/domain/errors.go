@@ -13,6 +13,12 @@ var (
 	ErrRuleNotFound = errors.New("alert rule not found")
 	// ErrRuleNameTaken: tên rule đã tồn tại trong workspace (UNIQUE ws+name).
 	ErrRuleNameTaken = errors.New("alert rule name already taken")
+	// ErrInstanceNotFound: không tồn tại alert instance theo định danh.
+	ErrInstanceNotFound = errors.New("alert instance not found")
+	// ErrInstanceNotAcknowledgeable: chỉ instance đang firing mới ack được.
+	ErrInstanceNotAcknowledgeable = errors.New("alert instance is not firing")
+	// ErrSilenceNotFound: silence không tồn tại trên Alertmanager (xoá id lạ).
+	ErrSilenceNotFound = errors.New("silence not found")
 )
 
 // ValidationError mô tả input không hợp lệ trên một field.

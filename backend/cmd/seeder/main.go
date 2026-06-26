@@ -53,7 +53,7 @@ func run() error {
 	defer pool.Close()
 
 	repo := userpg.NewRepository(pool)
-	hasher := usersys.NewBcryptHasher(0)
+	hasher := usersys.NewArgon2idHasher()
 	ids := usersys.NewUUIDGenerator()
 	clock := usersys.NewClock()
 
@@ -69,7 +69,7 @@ func run() error {
 func seedOne(
 	ctx context.Context,
 	repo *userpg.Repository,
-	hasher *usersys.BcryptHasher,
+	hasher *usersys.Argon2idHasher,
 	ids *usersys.UUIDGenerator,
 	clock *usersys.Clock,
 	log *logger.Logger,

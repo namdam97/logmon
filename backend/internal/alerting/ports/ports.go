@@ -16,11 +16,50 @@ type TxManager interface {
 	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// RuleRepository ghi alert rule. Save chạy trong tx của ctx (gọi bên trong
-// TxManager.WithinTx). ExistsByName kiểm trùng tên trong workspace.
+// RuleRepository ghi alert rule. Save/Update/Delete chạy trong tx của ctx (gọi
+// bên trong TxManager.WithinTx). ExistsByName kiểm trùng tên trong workspace.
 type RuleRepository interface {
 	Save(ctx context.Context, r domain.AlertRule) error
+	Update(ctx context.Context, r domain.AlertRule) error
+	Delete(ctx context.Context, id domain.RuleID) error
 	ExistsByName(ctx context.Context, workspaceID, name string) (bool, error)
+}
+
+// RuleSyncStatusWriter cập nhật trạng thái sync của rule sau khi Syncer chạy
+// (ADR-024) — đóng vòng lặp render→reload→ghi lại sync_status vào DB.
+type RuleSyncStatusWriter interface {
+	MarkSynced(ctx context.Context, now time.Time) error
+	MarkSyncError(ctx context.Context, message string, now time.Time) error
+}
+
+// AlertInstanceRepository ghi instance nhận từ Alertmanager webhook. UpsertFiring
+// idempotent theo (fingerprint, fired_at) — webhook lặp không tạo bản trùng.
+// Resolve đánh dấu mọi instance đang mở của một fingerprint là resolved.
+type AlertInstanceRepository interface {
+	UpsertFiring(ctx context.Context, inst domain.AlertInstance) error
+	Resolve(ctx context.Context, workspaceID, fingerprint string, at time.Time) error
+	// Acknowledge persist trạng thái acknowledged (status + acknowledged_at/by).
+	Acknowledge(ctx context.Context, inst domain.AlertInstance) error
+}
+
+// AlertInstanceReader là read side (CQRS) cho alert instance.
+type AlertInstanceReader interface {
+	// ListActive trả về các instance chưa resolved (firing|acknowledged).
+	ListActive(ctx context.Context, workspaceID string) ([]domain.AlertInstance, error)
+	// ByID đọc một instance theo id trong workspace; ErrInstanceNotFound nếu không có.
+	ByID(ctx context.Context, workspaceID, id string) (domain.AlertInstance, error)
+}
+
+// SilenceGateway proxy thao tác silence sang Alertmanager (/api/v2/silences).
+// LogMon KHÔNG lưu silence — Alertmanager là source of truth; gateway chỉ tạo/
+// xoá/liệt kê. Native matcher/expiry do Alertmanager đảm nhiệm, không reimplement.
+type SilenceGateway interface {
+	// Create tạo silence mới, trả về silenceID do Alertmanager sinh.
+	Create(ctx context.Context, s domain.Silence) (string, error)
+	// Delete huỷ silence theo id; ErrSilenceNotFound nếu id không tồn tại.
+	Delete(ctx context.Context, id string) error
+	// List trả về mọi silence hiện có (kèm trạng thái) làm read model.
+	List(ctx context.Context) ([]domain.SilenceView, error)
 }
 
 // RuleReader là read side (CQRS) — truy vấn rule, có thể tối ưu riêng.

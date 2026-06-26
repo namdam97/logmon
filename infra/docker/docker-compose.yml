@@ -39,6 +39,15 @@ services:
       postgres:
         condition: service_healthy
 
+  # Khởi tạo volume rule-generated với quyền cho user nonroot (uid 65532 của
+  # distroless): userservice ghi rule file, Prometheus mount read-only để đọc.
+  genrules-init:
+    image: busybox:1.37
+    restart: "no"
+    command: ["sh", "-c", "mkdir -p /data && chown -R 65532:65532 /data && chmod 0755 /data"]
+    volumes:
+      - genrules:/data
+
   userservice:
     build:
       context: ../../backend
@@ -62,12 +71,35 @@ services:
       # Nới qua env khi E2E/CI (make e2e set cao để không bị throttle).
       AUTH_RATE_PER_MINUTE: ${AUTH_RATE_PER_MINUTE:-10}
       AUTH_RATE_BURST: ${AUTH_RATE_BURST:-5}
+      # Rule sync pipeline (ADR-024): render rule file vào volume chung với Prometheus.
+      RULES_DIR: /etc/prometheus/generated
+      PROMETHEUS_URL: http://prometheus:9090
+      # Silence proxy (GĐ2.4b): tạo/xoá/liệt kê silence trên Alertmanager. Khi
+      # chạy stack nhẹ (không profile observability), AM chưa lên → /alerts/silences trả 502.
+      ALERTMANAGER_URL: http://alertmanager:9093
+      # Webhook receiver (GĐ2.3): PHẢI khớp secrets/logmon_webhook_token.txt mà
+      # Alertmanager dùng. Rỗng → receiver fail-closed (mọi webhook trả 401).
+      ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-local-dev-webhook-token}
+      # Tracing (doc_v2/04 §2): rỗng → tắt. Stack nhẹ `make up` để rỗng (không có
+      # OTel agent); `make up-full`/`up-demo` set otel-agent:4317 qua env recipe.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: userservice
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      # Log search API (GĐ2.8): truy vấn data stream logs-*. Rỗng → /logs tắt (stack
+      # nhẹ `make up` không có ES); `make up-full`/`up-demo` set elasticsearch:9200.
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      ELASTICSEARCH_USERNAME: elastic
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - genrules:/etc/prometheus/generated
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      genrules-init:
         condition: service_completed_successfully
 
   # ── Demo workload (ADR-029) — sinh telemetry cho dev/test platform ──────────
@@ -129,6 +161,7 @@ services:
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../prometheus/rules:/etc/prometheus/rules:ro
+      - genrules:/etc/prometheus/generated:ro   # rule render bởi alerting BC
       - promdata:/prometheus
     ports:
       - "9090:9090"
@@ -157,6 +190,7 @@ services:
     secrets:
       - slack_webhook_url
       - healthchecks_url
+      - logmon_webhook_token
     ports:
       - "9093:9093"
     healthcheck:
@@ -294,6 +328,8 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     deploy:
       resources:
         limits:
@@ -317,6 +353,20 @@ services:
         limits:
           memory: 256m
 
+  # Jaeger v2 (ADR-020) — nhận OTLP từ gateway, hiển thị trace waterfall.
+  # Dev: storage in-memory mặc định của image (đủ cho demo); production dùng ES
+  # (index prefix jaeger-, doc_v2/04 §2.4). UI :16686.
+  jaeger:
+    profiles: [observability]
+    image: jaegertracing/jaeger:2.10.0
+    restart: unless-stopped
+    ports:
+      - "16686:16686" # Jaeger UI
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
   elasticsearch-exporter:
     profiles: [observability]
     image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.9.0
@@ -335,6 +385,7 @@ services:
 
 volumes:
   pgdata:
+  genrules:   # rule file alerting BC render → Prometheus đọc (rule sync pipeline)
   promdata:
   grafanadata:
   esdata:
@@ -345,8 +396,13 @@ volumes:
 # Secrets file-based (doc_v2/10 §1) — copy từ *.example và điền URL thật:
 #   cp secrets/slack_webhook_url.txt.example secrets/slack_webhook_url.txt
 #   cp secrets/healthchecks_url.txt.example secrets/healthchecks_url.txt
+#   cp secrets/logmon_webhook_token.txt.example secrets/logmon_webhook_token.txt
+# Lưu ý: nội dung logmon_webhook_token.txt PHẢI khớp ALERTMANAGER_WEBHOOK_TOKEN
+# của userservice (mặc định local: local-dev-webhook-token).
 secrets:
   slack_webhook_url:
     file: ./secrets/slack_webhook_url.txt
   healthchecks_url:
     file: ./secrets/healthchecks_url.txt
+  logmon_webhook_token:
+    file: ./secrets/logmon_webhook_token.txt

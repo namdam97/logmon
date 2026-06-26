@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
@@ -68,6 +69,35 @@ func TestTraceIDReplacesInvalidIncomingHeader(t *testing.T) {
 	got := w.Header().Get("X-Trace-Id")
 	require.NotEqual(t, "../../etc/passwd", got)
 	require.Regexp(t, `^[a-f0-9]{32}$`, got)
+}
+
+func TestTraceIDUsesRealSpanTraceID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log := logger.New(&bytes.Buffer{}, "info")
+	const traceHex = "0123456789abcdef0123456789abcdef"
+
+	r := gin.New()
+	// Giả lập otelgin: bơm SpanContext W3C hợp lệ vào request context trước TraceID.
+	r.Use(func(c *gin.Context) {
+		tid, _ := trace.TraceIDFromHex(traceHex)
+		sid, _ := trace.SpanIDFromHex("0123456789abcdef")
+		sc := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled,
+		})
+		ctx := trace.ContextWithSpanContext(c.Request.Context(), sc)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	})
+	r.Use(middleware.TraceID(), middleware.Logging(log))
+	r.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	// Header client gửi phải bị bỏ qua khi đã có span thật.
+	req.Header.Set("X-Trace-Id", "ffffffffffffffffffffffffffffffff")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, traceHex, w.Header().Get("X-Trace-Id"))
 }
 
 func TestRateLimiterBlocksBurst(t *testing.T) {

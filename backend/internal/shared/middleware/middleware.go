@@ -3,6 +3,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
@@ -20,19 +22,35 @@ const traceIDHeader = "X-Trace-Id"
 // traceIDPattern: 32 ký tự hex (16 bytes) — khớp định dạng newTraceID sinh ra.
 var traceIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
-// TraceID gắn một trace_id cho mỗi request. Chỉ tin trace_id client gửi nếu
-// đúng định dạng hex (chống log injection / pollution); ngược lại sinh mới.
+// TraceID đảm bảo mỗi request có một trace_id để hồi đáp + log. Khi otelgin đã
+// tạo span thật (tracing bật), dùng luôn trace_id W3C của span để header khớp
+// Jaeger — logger cũng tự lấy trace_id+span_id từ SpanContext. Khi không có span
+// (tracing tắt), giữ hành vi cũ: tin trace_id client gửi nếu đúng hex, ngược lại
+// sinh mới (chống log injection / pollution).
 func TraceID() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		if tid := traceIDFromSpan(ctx); tid != "" {
+			c.Header(traceIDHeader, tid)
+			c.Next()
+			return
+		}
 		tid := c.GetHeader(traceIDHeader)
 		if !traceIDPattern.MatchString(tid) {
 			tid = newTraceID()
 		}
-		ctx := logger.ContextWithTraceID(c.Request.Context(), tid)
-		c.Request = c.Request.WithContext(ctx)
+		c.Request = c.Request.WithContext(logger.ContextWithTraceID(ctx, tid))
 		c.Header(traceIDHeader, tid)
 		c.Next()
 	}
+}
+
+// traceIDFromSpan trả về trace_id W3C của span hiện hành, "" nếu không có span hợp lệ.
+func traceIDFromSpan(ctx context.Context) string {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return sc.TraceID().String()
+	}
+	return ""
 }
 
 // Logging log mỗi request sau khi xử lý xong, kèm trace_id từ context.
@@ -77,7 +95,7 @@ func CORS(allowedOrigin string) gin.HandlerFunc {
 			h.Set("Access-Control-Allow-Origin", allowedOrigin)
 			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Content-Type")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
 			h.Add("Vary", "Origin")
 		}
 		if c.Request.Method == http.MethodOptions {

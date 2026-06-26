@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ctxKey int
@@ -45,8 +46,13 @@ func TraceIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// withCtx thêm trace_id (nếu có) vào một event.
+// withCtx gắn correlation IDs vào event. Ưu tiên SpanContext OTel thật (trace_id
+// + span_id W3C, khớp Jaeger); nếu không có span thì fallback trace_id gắn thủ
+// công (vd background job ngoài luồng HTTP).
 func (l *Logger) withCtx(ctx context.Context, e *zerolog.Event) *zerolog.Event {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return e.Str("trace_id", sc.TraceID().String()).Str("span_id", sc.SpanID().String())
+	}
 	if tid := TraceIDFromContext(ctx); tid != "" {
 		e = e.Str("trace_id", tid)
 	}

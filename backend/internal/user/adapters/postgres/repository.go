@@ -47,6 +47,16 @@ func (r *Repository) Save(ctx context.Context, u domain.User) error {
 	return nil
 }
 
+// UpdatePasswordHash cập nhật hash mật khẩu (lazy migration). Caller chỉ gọi sau
+// khi đã load user nên không cần phân biệt trường hợp không có dòng.
+func (r *Repository) UpdatePasswordHash(ctx context.Context, id domain.UserID, hash string) error {
+	const q = `UPDATE users SET password_hash = $1 WHERE id = $2`
+	if _, err := r.pool.Exec(ctx, q, hash, id.String()); err != nil {
+		return fmt.Errorf("update password hash: %w", err)
+	}
+	return nil
+}
+
 // ByID lấy user theo id. Trả về domain.ErrUserNotFound nếu không có dòng nào.
 func (r *Repository) ByID(ctx context.Context, id domain.UserID) (domain.User, error) {
 	const q = `SELECT id, email, password_hash, created_at

@@ -40,7 +40,7 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	pool, err := pgxpool.New(ctx, dburl)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
-	_, err = pool.Exec(context.Background(), "TRUNCATE alert_rules, outbox_events RESTART IDENTITY")
+	_, err = pool.Exec(context.Background(), "TRUNCATE alert_rules, alert_instances, outbox_events RESTART IDENTITY")
 	require.NoError(t, err)
 	return pool
 }

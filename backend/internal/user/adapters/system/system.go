@@ -1,48 +1,14 @@
 // Package system cung cấp implementation cho các port hạ tầng của user:
-// băm mật khẩu (bcrypt), sinh id (UUID v4) và đồng hồ hệ thống.
+// sinh id (UUID v4) và đồng hồ hệ thống. Băm mật khẩu nằm ở argon2.go.
 package system
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/namdam97/logmon/backend/internal/user/ports"
 )
-
-// BcryptHasher băm mật khẩu bằng bcrypt với cost cấu hình được.
-type BcryptHasher struct {
-	cost int
-}
-
-var _ ports.PasswordHasher = (*BcryptHasher)(nil)
-
-// NewBcryptHasher tạo hasher; cost <= 0 dùng bcrypt.DefaultCost.
-func NewBcryptHasher(cost int) *BcryptHasher {
-	if cost <= 0 {
-		cost = bcrypt.DefaultCost
-	}
-	return &BcryptHasher{cost: cost}
-}
-
-// Hash trả về bcrypt hash của mật khẩu plaintext.
-func (h *BcryptHasher) Hash(plain string) (string, error) {
-	b, err := bcrypt.GenerateFromPassword([]byte(plain), h.cost)
-	if err != nil {
-		return "", fmt.Errorf("bcrypt generate: %w", err)
-	}
-	return string(b), nil
-}
-
-// Verify trả về nil nếu plain khớp hash, ngược lại trả về lỗi so khớp.
-func (h *BcryptHasher) Verify(hash, plain string) error {
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain)); err != nil {
-		return fmt.Errorf("bcrypt compare: %w", err)
-	}
-	return nil
-}
 
 // UUIDGenerator sinh id dạng UUID v4.
 type UUIDGenerator struct{}

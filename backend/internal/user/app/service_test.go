@@ -15,13 +15,19 @@ import (
 // --- test doubles (inject dependencies, không dùng mutable globals) ---
 
 type fakeRepo struct {
-	byID    map[string]domain.User
-	byEmail map[string]domain.User
-	saveErr error
+	byID        map[string]domain.User
+	byEmail     map[string]domain.User
+	saveErr     error
+	updatedHash map[string]string
+	updateErr   error
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{byID: map[string]domain.User{}, byEmail: map[string]domain.User{}}
+	return &fakeRepo{
+		byID:        map[string]domain.User{},
+		byEmail:     map[string]domain.User{},
+		updatedHash: map[string]string{},
+	}
 }
 
 func (r *fakeRepo) Save(_ context.Context, u domain.User) error {
@@ -49,7 +55,15 @@ func (r *fakeRepo) ByEmail(_ context.Context, email domain.Email) (domain.User, 
 	return u, nil
 }
 
-type fakeHasher struct{}
+func (r *fakeRepo) UpdatePasswordHash(_ context.Context, id domain.UserID, hash string) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
+	r.updatedHash[id.String()] = hash
+	return nil
+}
+
+type fakeHasher struct{ rehash bool }
 
 func (fakeHasher) Hash(plain string) (string, error) { return "hashed:" + plain, nil }
 
@@ -59,6 +73,8 @@ func (fakeHasher) Verify(hash, plain string) error {
 	}
 	return errors.New("mismatch")
 }
+
+func (h fakeHasher) NeedsRehash(string) bool { return h.rehash }
 
 type fixedIDGen struct{ id string }
 
@@ -171,4 +187,50 @@ func TestServiceLogin(t *testing.T) {
 			require.Equal(t, "a@b.com", user.Email().String())
 		})
 	}
+}
+
+func newServiceWith(repo *fakeRepo, hasher fakeHasher) *app.Service {
+	return app.NewService(
+		repo, hasher, fixedIDGen{id: "user-1"},
+		fixedClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		fakeTokens{token: "tok-123"},
+	)
+}
+
+func TestServiceLoginLazyRehash(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newServiceWith(repo, fakeHasher{rehash: true})
+	_, err := svc.Register(context.Background(), app.RegisterInput{Email: "a@b.com", Password: "password123"})
+	require.NoError(t, err)
+
+	_, _, err = svc.Login(context.Background(), app.LoginInput{Email: "a@b.com", Password: "password123"})
+
+	require.NoError(t, err)
+	require.Equal(t, "hashed:password123", repo.updatedHash["user-1"],
+		"login thành công phải re-hash mật khẩu khi hash cũ cần nâng cấp")
+}
+
+func TestServiceLoginNoRehashWhenCurrent(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newServiceWith(repo, fakeHasher{rehash: false})
+	_, err := svc.Register(context.Background(), app.RegisterInput{Email: "a@b.com", Password: "password123"})
+	require.NoError(t, err)
+
+	_, _, err = svc.Login(context.Background(), app.LoginInput{Email: "a@b.com", Password: "password123"})
+
+	require.NoError(t, err)
+	require.Empty(t, repo.updatedHash, "hash hiện hành thì không re-hash")
+}
+
+func TestServiceLoginRehashFailureDoesNotBlock(t *testing.T) {
+	repo := newFakeRepo()
+	repo.updateErr = errors.New("db down")
+	svc := newServiceWith(repo, fakeHasher{rehash: true})
+	_, err := svc.Register(context.Background(), app.RegisterInput{Email: "a@b.com", Password: "password123"})
+	require.NoError(t, err)
+
+	_, token, err := svc.Login(context.Background(), app.LoginInput{Email: "a@b.com", Password: "password123"})
+
+	require.NoError(t, err, "re-hash lỗi vẫn cho login thành công (best-effort)")
+	require.Equal(t, "tok-123", token)
 }
