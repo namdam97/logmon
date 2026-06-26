@@ -53,6 +53,17 @@ func (r *fakeRepo) ByEmail(_ context.Context, email domain.Email) (domain.User, 
 	return u, nil
 }
 
+func (r *fakeRepo) UpdatePasswordHash(_ context.Context, id domain.UserID, hash string) error {
+	u, ok := r.byID[id.String()]
+	if !ok {
+		return domain.ErrUserNotFound
+	}
+	r.byID[id.String()] = u
+	r.byEmail[u.Email().String()] = u
+	_ = hash
+	return nil
+}
+
 type fakeHasher struct{}
 
 func (fakeHasher) Hash(p string) (string, error) { return "h:" + p, nil }
@@ -63,6 +74,8 @@ func (fakeHasher) Verify(hash, plain string) error {
 	}
 	return errors.New("mismatch")
 }
+
+func (fakeHasher) NeedsRehash(string) bool { return false }
 
 type fixedID struct{ id string }
 

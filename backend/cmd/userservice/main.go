@@ -64,7 +64,6 @@ type config struct {
 	port           string
 	databaseURL    string
 	logLevel       string
-	bcryptCost     int
 	jwtSecret      string
 	cookieSecure   bool
 	allowedOrigin  string
@@ -77,12 +76,10 @@ type config struct {
 }
 
 func loadConfig() config {
-	cost, _ := strconv.Atoi(os.Getenv("BCRYPT_COST"))
 	return config{
 		port:           envOr("PORT", _defaultPort),
 		databaseURL:    os.Getenv("DATABASE_URL"),
 		logLevel:       envOr("LOG_LEVEL", "info"),
-		bcryptCost:     cost,
 		jwtSecret:      os.Getenv("JWT_SECRET"),
 		cookieSecure:   envOr("COOKIE_SECURE", "true") != "false",
 		allowedOrigin:  os.Getenv("ALLOWED_ORIGIN"),
@@ -190,10 +187,11 @@ func run() error {
 	mx := metrics.New()
 	svc := userapp.NewService(
 		userpg.NewRepository(pool),
-		usersys.NewBcryptHasher(cfg.bcryptCost),
+		usersys.NewArgon2idHasher(),
 		usersys.NewUUIDGenerator(),
 		usersys.NewClock(),
 		jwtSvc,
+		userapp.WithLogger(log),
 	)
 
 	alerting := buildAlerting(pool, cfg)

@@ -18,6 +18,19 @@ type Service struct {
 	ids    ports.IDGenerator
 	clock  ports.Clock
 	tokens ports.TokenIssuer
+	log    ports.Logger
+}
+
+// Option cấu hình tuỳ chọn cho Service (functional options).
+type Option func(*Service)
+
+// WithLogger inject logger để báo lỗi không nghiêm trọng (vd: lazy migration).
+func WithLogger(l ports.Logger) Option {
+	return func(s *Service) {
+		if l != nil {
+			s.log = l
+		}
+	}
 }
 
 // NewService tạo Service với các dependency bắt buộc (accept interfaces).
@@ -27,9 +40,19 @@ func NewService(
 	ids ports.IDGenerator,
 	clock ports.Clock,
 	tokens ports.TokenIssuer,
+	opts ...Option,
 ) *Service {
-	return &Service{repo: repo, hasher: hasher, ids: ids, clock: clock, tokens: tokens}
+	s := &Service{repo: repo, hasher: hasher, ids: ids, clock: clock, tokens: tokens, log: nopLogger{}}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
+
+// nopLogger là logger mặc định không làm gì — tránh nil check khắp nơi.
+type nopLogger struct{}
+
+func (nopLogger) Error(context.Context, error, string) {}
 
 // RegisterInput là dữ liệu vào cho use case đăng ký user.
 type RegisterInput struct {
@@ -101,11 +124,30 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (domain.User, string
 		return domain.User{}, "", domain.ErrInvalidCredentials
 	}
 
+	s.maybeRehash(ctx, user, in.Password)
+
 	token, err := s.tokens.Issue(user.ID().String())
 	if err != nil {
 		return domain.User{}, "", fmt.Errorf("issue token: %w", err)
 	}
 	return user, token, nil
+}
+
+// maybeRehash nâng cấp hash mật khẩu sang thuật toán hiện hành sau khi login
+// thành công (lazy migration bcrypt → argon2id — ADR-022). Best-effort: lỗi
+// không chặn login (user đã xác thực đúng), chỉ log để lần sau thử lại.
+func (s *Service) maybeRehash(ctx context.Context, user domain.User, plain string) {
+	if !s.hasher.NeedsRehash(user.PasswordHash()) {
+		return
+	}
+	newHash, err := s.hasher.Hash(plain)
+	if err != nil {
+		s.log.Error(ctx, err, "lazy rehash: hash password")
+		return
+	}
+	if err := s.repo.UpdatePasswordHash(ctx, user.ID(), newHash); err != nil {
+		s.log.Error(ctx, err, "lazy rehash: update password hash")
+	}
 }
 
 // Get lấy user theo id. Trả về domain.ErrUserNotFound nếu không tồn tại.
