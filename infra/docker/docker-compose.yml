@@ -85,6 +85,11 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: userservice
       OTEL_EXPORTER_OTLP_INSECURE: "true"
+      # Log search API (GĐ2.8): truy vấn data stream logs-*. Rỗng → /logs tắt (stack
+      # nhẹ `make up` không có ES); `make up-full`/`up-demo` set elasticsearch:9200.
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      ELASTICSEARCH_USERNAME: elastic
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
     volumes:
       - genrules:/etc/prometheus/generated
     ports:

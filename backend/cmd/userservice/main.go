@@ -31,6 +31,9 @@ import (
 	"github.com/namdam97/logmon/backend/internal/alerting/app/command"
 	"github.com/namdam97/logmon/backend/internal/alerting/app/query"
 	alertingdomain "github.com/namdam97/logmon/backend/internal/alerting/domain"
+	"github.com/namdam97/logmon/backend/internal/logpipeline/adapters/elasticsearch"
+	loghttp "github.com/namdam97/logmon/backend/internal/logpipeline/adapters/http"
+	logquery "github.com/namdam97/logmon/backend/internal/logpipeline/app/query"
 	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
@@ -85,6 +88,9 @@ type config struct {
 	otelEndpoint   string
 	otelService    string
 	otelInsecure   bool
+	esURL          string
+	esUsername     string
+	esPassword     string
 }
 
 func loadConfig() config {
@@ -106,6 +112,10 @@ func loadConfig() config {
 		otelEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		otelService:  envOr("OTEL_SERVICE_NAME", _serviceName),
 		otelInsecure: envOr("OTEL_EXPORTER_OTLP_INSECURE", "true") != "false",
+		// Elasticsearch log search (GĐ2.8). Rỗng → tắt /logs (stack nhẹ không có ES).
+		esURL:      os.Getenv("ELASTICSEARCH_URL"),
+		esUsername: envOr("ELASTICSEARCH_USERNAME", "elastic"),
+		esPassword: os.Getenv("ELASTICSEARCH_PASSWORD"),
 	}
 }
 
@@ -270,11 +280,21 @@ func run() error {
 	alerting := buildAlerting(pool, cfg)
 	go alerting.relay.Run(ctx)
 
+	// Log search (GĐ2.8): truy vấn data stream logs-* trên Elasticsearch. Optional —
+	// ELASTICSEARCH_URL rỗng (stack nhẹ) → không đăng ký /logs.
+	var logHandler *loghttp.LogHandler
+	if cfg.esURL != "" {
+		esClient := elasticsearch.NewClient(cfg.esURL, cfg.esUsername, cfg.esPassword)
+		logHandler = loghttp.NewLogHandler(logquery.NewLogQueries(esClient))
+	} else {
+		log.Info(context.Background(), "ELASTICSEARCH_URL chưa set — log search API (/api/v1/logs) tắt")
+	}
+
 	if cfg.webhookToken == "" {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -313,6 +333,7 @@ func buildRouter(
 	svc *userapp.Service,
 	refreshSvc *userapp.RefreshService,
 	alerting alertingDeps,
+	logHandler *loghttp.LogHandler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	csrf *auth.CSRFProtector,
@@ -367,6 +388,9 @@ func buildRouter(
 	alerting.handler.Register(api, auth.RequireAuth(jwtSvc))
 	alerting.instanceHandler.Register(api, auth.RequireAuth(jwtSvc), auth.RequireBearerToken(webhookToken))
 	alerting.silenceHandler.Register(api, auth.RequireAuth(jwtSvc))
+	if logHandler != nil {
+		logHandler.Register(api, auth.RequireAuth(jwtSvc))
+	}
 	return r
 }
 
