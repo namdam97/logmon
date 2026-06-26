@@ -25,6 +25,14 @@ datasources:
       timeField: "@timestamp"
       logMessageField: body.text
       logLevelField: severity_text
+      # Correlation logs→traces (doc_v2/04 §2.4): mỗi log mang field trace_id
+      # (do trace_parser ở agent ghi từ SpanContext OTel) → click mở đúng trace
+      # trên Jaeger. datasourceUid trỏ datasource Jaeger phía trên.
+      dataLinks:
+        - field: trace_id
+          datasourceUid: jaeger
+          url: "$${__value.raw}"
+          urlDisplayLabel: "View trace in Jaeger"
     editable: false
 
   # Traces (doc_v2/04 §2.4): Jaeger v2 nhận OTLP từ gateway. Liên kết

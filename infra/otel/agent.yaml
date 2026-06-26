@@ -34,12 +34,20 @@ receivers:
         if: attributes.service != nil
         from: attributes.service
         to: resource["service.name"]
-      # message → body (giữ trace_id/span_id là attribute thường ở GĐ1;
-      # trace_parser chỉ dùng khi có W3C trace id thật từ OTel SDK — GĐ2).
+      # message → body.
       - type: move
         if: attributes.message != nil
         from: attributes.message
         to: body
+      # trace_id/span_id (W3C hex, do OTel SDK + logger phát ra — GĐ2.7) →
+      # trace context của LogRecord, để ES exporter ghi field top-level trace_id/
+      # span_id. Nhờ đó Grafana derived field nhảy từ log sang trace trên Jaeger.
+      - type: trace_parser
+        if: attributes.trace_id != nil
+        trace_id:
+          parse_from: attributes.trace_id
+        span_id:
+          parse_from: attributes.span_id
 
 processors:
   memory_limiter:
