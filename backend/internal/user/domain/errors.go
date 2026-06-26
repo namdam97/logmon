@@ -16,6 +16,11 @@ var (
 	// ErrInvalidCredentials: sai email hoặc mật khẩu khi đăng nhập. Dùng chung
 	// cho cả hai trường hợp để không lộ email nào tồn tại.
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	// ErrRefreshTokenInvalid: refresh token không tồn tại, hết hạn, hoặc đã rotate.
+	ErrRefreshTokenInvalid = errors.New("invalid refresh token")
+	// ErrRefreshTokenReused: refresh token đã rotate bị dùng lại — dấu hiệu token
+	// bị đánh cắp; toàn bộ family bị thu hồi.
+	ErrRefreshTokenReused = errors.New("refresh token reused")
 )
 
 // ValidationError mô tả input không hợp lệ trên một field. Suffix "Error" theo

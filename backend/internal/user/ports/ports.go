@@ -45,6 +45,29 @@ type TokenIssuer interface {
 	Issue(userID string) (string, error)
 }
 
+// RefreshTokenRepository lưu trữ refresh token (chỉ hash). Rotation cần một thao
+// tác claim nguyên tử để an toàn với truy cập đồng thời.
+type RefreshTokenRepository interface {
+	// Insert lưu một refresh token mới (chưa dùng).
+	Insert(ctx context.Context, t domain.RefreshToken) error
+	// ClaimByHash đánh dấu used_at cho token chưa dùng & chưa hết hạn theo hash,
+	// trả về token đã claim (ok=true). Nếu không có token hợp lệ để claim → ok=false.
+	ClaimByHash(ctx context.Context, hash string, now time.Time) (claimed domain.RefreshToken, ok bool, err error)
+	// ByHash lấy token theo hash bất kể trạng thái — dùng để phân biệt reuse với
+	// token không tồn tại sau khi claim thất bại. ErrRefreshTokenInvalid nếu không có.
+	ByHash(ctx context.Context, hash string) (domain.RefreshToken, error)
+	// RevokeFamily xoá toàn bộ token thuộc một family (reuse detection / logout).
+	RevokeFamily(ctx context.Context, familyID string) error
+}
+
+// RefreshTokenCodec sinh token thô (crypto/rand) và băm (SHA-256) để lưu/đối chiếu.
+type RefreshTokenCodec interface {
+	// Generate trả về token thô ngẫu nhiên, an toàn cho URL/cookie.
+	Generate() (raw string, err error)
+	// Hash trả về SHA-256 hex của token thô (đối chiếu constant-time qua so khớp chuỗi hex).
+	Hash(raw string) string
+}
+
 // IDGenerator sinh định danh duy nhất cho user mới.
 type IDGenerator interface {
 	NewID() string

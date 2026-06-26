@@ -42,8 +42,9 @@ const (
 	_shutdownTimeout   = 10 * time.Second
 	_readHeaderTimeout = 5 * time.Second
 	_dbConnectTimeout  = 10 * time.Second
-	_defaultJWTTTL     = 24 * time.Hour
-	_authRatePerMinute = 10 // mặc định: giới hạn login/register mỗi IP
+	_defaultJWTTTL     = 15 * time.Minute    // access token ngắn (ADR-023)
+	_defaultRefreshTTL = 14 * 24 * time.Hour // refresh token dài
+	_authRatePerMinute = 10                  // mặc định: giới hạn login/register mỗi IP
 	_authRateBurst     = 5
 
 	// _defaultWorkspaceID là workspace mặc định GĐ2 (multi-tenancy đầy đủ ở GĐ3).
@@ -185,13 +186,24 @@ func run() error {
 	}
 
 	mx := metrics.New()
+	userIDs := usersys.NewUUIDGenerator()
+	userClock := usersys.NewClock()
 	svc := userapp.NewService(
 		userpg.NewRepository(pool),
 		usersys.NewArgon2idHasher(),
-		usersys.NewUUIDGenerator(),
-		usersys.NewClock(),
+		userIDs,
+		userClock,
 		jwtSvc,
 		userapp.WithLogger(log),
+	)
+	refreshSvc := userapp.NewRefreshService(
+		userpg.NewRefreshRepository(pool),
+		usersys.NewRefreshCodec(),
+		jwtSvc,
+		userIDs,
+		userClock,
+		_defaultRefreshTTL,
+		log,
 	)
 
 	alerting := buildAlerting(pool, cfg)
@@ -201,7 +213,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, alerting, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -238,6 +250,7 @@ func buildRouter(
 	log *logger.Logger,
 	mx *metrics.Metrics,
 	svc *userapp.Service,
+	refreshSvc *userapp.RefreshService,
 	alerting alertingDeps,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
@@ -269,9 +282,10 @@ func buildRouter(
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(mx.Registry(), promhttp.HandlerOpts{})))
 
 	api := r.Group("/api/v1")
-	handler := userhttp.NewHandler(svc, userhttp.CookieConfig{
-		Secure:        cookieSecure,
-		MaxAgeSeconds: int(_defaultJWTTTL.Seconds()),
+	handler := userhttp.NewHandler(svc, refreshSvc, userhttp.CookieConfig{
+		Secure:               cookieSecure,
+		MaxAgeSeconds:        int(_defaultJWTTTL.Seconds()),
+		RefreshMaxAgeSeconds: int(_defaultRefreshTTL.Seconds()),
 	})
 	authRate := middleware.NewPerMinuteLimiter(authRatePerMin, authRateBurst)
 	handler.Register(api, auth.RequireAuth(jwtSvc), authRate.Middleware())

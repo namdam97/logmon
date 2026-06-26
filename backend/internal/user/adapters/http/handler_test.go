@@ -77,6 +77,41 @@ func (fakeHasher) Verify(hash, plain string) error {
 
 func (fakeHasher) NeedsRehash(string) bool { return false }
 
+// fakeRefresher giả lập refresh service ở tầng HTTP (logic rotate/reuse được test
+// ở tầng app). gotRotate/revokedRaw ghi lại đầu vào để assert.
+type fakeRefresher struct {
+	issued     string
+	issueErr   error
+	pair       app.TokenPair
+	rotateErr  error
+	gotRotate  string
+	revokedRaw string
+	revokeErr  error
+}
+
+func (f *fakeRefresher) Issue(_ context.Context, _ string) (string, error) {
+	if f.issueErr != nil {
+		return "", f.issueErr
+	}
+	if f.issued == "" {
+		return "refresh-raw", nil
+	}
+	return f.issued, nil
+}
+
+func (f *fakeRefresher) Rotate(_ context.Context, raw string) (app.TokenPair, error) {
+	f.gotRotate = raw
+	if f.rotateErr != nil {
+		return app.TokenPair{}, f.rotateErr
+	}
+	return f.pair, nil
+}
+
+func (f *fakeRefresher) Revoke(_ context.Context, raw string) error {
+	f.revokedRaw = raw
+	return f.revokeErr
+}
+
 type fixedID struct{ id string }
 
 func (g fixedID) NewID() string { return g.id }
@@ -86,6 +121,10 @@ type fixedClock struct{}
 func (fixedClock) Now() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
 func newRouter(t *testing.T) *gin.Engine {
+	return newRouterWith(t, &fakeRefresher{pair: app.TokenPair{Access: "acc2", Refresh: "ref2"}})
+}
+
+func newRouterWith(t *testing.T, rf *fakeRefresher) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	repo := &fakeRepo{byID: map[string]domain.User{}, byEmail: map[string]domain.User{}}
@@ -94,7 +133,9 @@ func newRouter(t *testing.T) *gin.Engine {
 	svc := app.NewService(repo, fakeHasher{}, fixedID{id: "user-1"}, fixedClock{}, jwtSvc)
 
 	r := gin.New()
-	h := userhttp.NewHandler(svc, userhttp.CookieConfig{Secure: false, MaxAgeSeconds: 3600})
+	h := userhttp.NewHandler(svc, rf, userhttp.CookieConfig{
+		Secure: false, MaxAgeSeconds: 3600, RefreshMaxAgeSeconds: 1209600,
+	})
 	// Rate limit cao để không cản test gọi nhiều request.
 	rate := middleware.NewPerMinuteLimiter(100000, 1000)
 	h.Register(r.Group("/api/v1"), auth.RequireAuth(jwtSvc), rate.Middleware())
@@ -215,10 +256,64 @@ func extractID(t *testing.T, w *httptest.ResponseRecorder) string {
 }
 
 func loginCookie(w *httptest.ResponseRecorder) *http.Cookie {
+	return cookieByName(w, auth.CookieName)
+}
+
+func cookieByName(w *httptest.ResponseRecorder, name string) *http.Cookie {
 	for _, c := range w.Result().Cookies() {
-		if c.Name == auth.CookieName {
+		if c.Name == name {
 			return c
 		}
 	}
 	return nil
+}
+
+func TestRefreshEndpoint(t *testing.T) {
+	t.Run("no cookie is 401", func(t *testing.T) {
+		r := newRouter(t)
+		w := doJSON(t, r, http.MethodPost, "/api/v1/auth/refresh", "", nil)
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("rotates and sets new cookies", func(t *testing.T) {
+		rf := &fakeRefresher{pair: app.TokenPair{Access: "newacc", Refresh: "newref"}}
+		r := newRouterWith(t, rf)
+		w := doJSON(t, r, http.MethodPost, "/api/v1/auth/refresh", "",
+			&http.Cookie{Name: "lm_refresh", Value: "oldref"})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Equal(t, "oldref", rf.gotRotate, "rotate phải nhận token từ cookie")
+		require.Equal(t, "newacc", cookieByName(w, auth.CookieName).Value)
+		require.Equal(t, "newref", cookieByName(w, "lm_refresh").Value)
+	})
+
+	t.Run("reuse clears cookies and 401", func(t *testing.T) {
+		rf := &fakeRefresher{rotateErr: domain.ErrRefreshTokenReused}
+		r := newRouterWith(t, rf)
+		w := doJSON(t, r, http.MethodPost, "/api/v1/auth/refresh", "",
+			&http.Cookie{Name: "lm_refresh", Value: "stolen"})
+
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+		cleared := cookieByName(w, "lm_refresh")
+		require.NotNil(t, cleared)
+		require.True(t, cleared.MaxAge < 0, "reuse phải xoá refresh cookie")
+	})
+
+	t.Run("invalid token is 401", func(t *testing.T) {
+		rf := &fakeRefresher{rotateErr: domain.ErrRefreshTokenInvalid}
+		r := newRouterWith(t, rf)
+		w := doJSON(t, r, http.MethodPost, "/api/v1/auth/refresh", "",
+			&http.Cookie{Name: "lm_refresh", Value: "bad"})
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+}
+
+func TestLogoutRevokesRefreshFamily(t *testing.T) {
+	rf := &fakeRefresher{}
+	r := newRouterWith(t, rf)
+	w := doJSON(t, r, http.MethodPost, "/api/v1/auth/logout", "",
+		&http.Cookie{Name: "lm_refresh", Value: "live-token"})
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "live-token", rf.revokedRaw, "logout phải thu hồi family của refresh token")
 }

@@ -3,6 +3,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -15,38 +16,71 @@ import (
 	"github.com/namdam97/logmon/backend/internal/user/domain"
 )
 
-// CookieConfig cấu hình cookie chứa access token.
+// CookieConfig cấu hình cookie chứa access token + refresh token.
 type CookieConfig struct {
 	// Secure đặt cờ Secure (chỉ gửi qua HTTPS). Bật trong production.
 	Secure bool
-	// MaxAgeSeconds là thời gian sống của cookie tính bằng giây.
+	// MaxAgeSeconds là thời gian sống của access cookie tính bằng giây.
 	MaxAgeSeconds int
+	// RefreshMaxAgeSeconds là thời gian sống của refresh cookie (dài hơn access).
+	RefreshMaxAgeSeconds int
+}
+
+// _refreshCookieName giữ refresh token; _refreshCookiePath giới hạn cookie chỉ
+// gửi tới các route auth (rotate/logout) thay vì mọi request như access cookie.
+const (
+	_refreshCookieName = "lm_refresh"
+	_refreshCookiePath = "/api/v1/auth"
+)
+
+// refresher là các thao tác refresh-token mà handler cần (ISP).
+type refresher interface {
+	Issue(ctx context.Context, userID string) (string, error)
+	Rotate(ctx context.Context, rawRefresh string) (app.TokenPair, error)
+	Revoke(ctx context.Context, rawRefresh string) error
 }
 
 // Handler gắn các use case của user vào HTTP routes.
 type Handler struct {
 	svc      *app.Service
+	refresh  refresher
 	validate *validator.Validate
 	cookie   CookieConfig
 }
 
-// NewHandler tạo Handler với application service và cấu hình cookie.
-func NewHandler(svc *app.Service, cookie CookieConfig) *Handler {
+// NewHandler tạo Handler với application service, refresh service và cấu hình cookie.
+func NewHandler(svc *app.Service, refresh refresher, cookie CookieConfig) *Handler {
 	return &Handler{
 		svc:      svc,
+		refresh:  refresh,
 		validate: validator.New(validator.WithRequiredStructEnabled()),
 		cookie:   cookie,
 	}
 }
 
 // Register gắn routes của user. authMW bảo vệ route yêu cầu đăng nhập; rateMW
-// throttle các route nhạy cảm (đăng ký, đăng nhập) chống brute-force/spam.
+// throttle các route nhạy cảm (đăng ký, đăng nhập, refresh) chống brute-force/spam.
 func (h *Handler) Register(rg *gin.RouterGroup, authMW, rateMW gin.HandlerFunc) {
 	rg.POST("/users", rateMW, h.register)
 	rg.POST("/auth/login", rateMW, h.login)
+	rg.POST("/auth/refresh", rateMW, h.refreshToken)
 	rg.POST("/auth/logout", h.logout)
 	rg.GET("/users/:id", authMW, h.get)
 	rg.GET("/me", authMW, h.me)
+}
+
+// setAuthCookies set access + refresh cookie (HttpOnly, Secure, SameSite=Strict).
+func (h *Handler) setAuthCookies(c *gin.Context, access, refresh string) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(auth.CookieName, access, h.cookie.MaxAgeSeconds, "/", "", h.cookie.Secure, true)
+	c.SetCookie(_refreshCookieName, refresh, h.cookie.RefreshMaxAgeSeconds, _refreshCookiePath, "", h.cookie.Secure, true)
+}
+
+// clearAuthCookies xoá cả hai cookie (maxAge < 0).
+func (h *Handler) clearAuthCookies(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(auth.CookieName, "", -1, "/", "", h.cookie.Secure, true)
+	c.SetCookie(_refreshCookieName, "", -1, _refreshCookiePath, "", h.cookie.Secure, true)
 }
 
 type registerRequest struct {
@@ -115,18 +149,47 @@ func (h *Handler) login(c *gin.Context) {
 		return
 	}
 
-	// Cookie HttpOnly + Secure + SameSite=Strict (không gửi kèm cross-site, chống CSRF).
-	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie(auth.CookieName, token, h.cookie.MaxAgeSeconds, "/", "", h.cookie.Secure, true)
+	refresh, err := h.refresh.Issue(c.Request.Context(), user.ID().String())
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	h.setAuthCookies(c, token, refresh)
 	httpx.OK(c, http.StatusOK, toResponse(user))
 }
 
-// logout huỷ cookie phiên (JWT stateless: không có state server để xoá). Idempotent
-// — không yêu cầu đăng nhập, gọi nhiều lần vô hại.
+// refreshToken rotate refresh token lấy cặp access+refresh mới. Token cũ bị vô
+// hiệu; phát hiện reuse → thu hồi family + xoá cookie. Đọc refresh từ cookie
+// (HttpOnly) — JS không truy cập được.
+func (h *Handler) refreshToken(c *gin.Context) {
+	raw, err := c.Cookie(_refreshCookieName)
+	if err != nil || raw == "" {
+		httpx.Fail(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	pair, err := h.refresh.Rotate(c.Request.Context(), raw)
+	if err != nil {
+		// Reuse hoặc token không hợp lệ: xoá cookie, trả 401 generic.
+		h.clearAuthCookies(c)
+		if errors.Is(err, domain.ErrRefreshTokenReused) || errors.Is(err, domain.ErrRefreshTokenInvalid) {
+			httpx.Fail(c, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	h.setAuthCookies(c, pair.Access, pair.Refresh)
+	httpx.OK(c, http.StatusOK, gin.H{"refreshed": true})
+}
+
+// logout thu hồi refresh family (nếu có) và xoá cookie phiên. Idempotent — không
+// yêu cầu đăng nhập, gọi nhiều lần vô hại.
 func (h *Handler) logout(c *gin.Context) {
-	c.SetSameSite(http.SameSiteStrictMode)
-	// maxAge < 0 → trình duyệt xoá cookie ngay.
-	c.SetCookie(auth.CookieName, "", -1, "/", "", h.cookie.Secure, true)
+	if raw, err := c.Cookie(_refreshCookieName); err == nil && raw != "" {
+		// Best-effort: lỗi thu hồi không chặn logout (vẫn xoá cookie phía client).
+		_ = h.refresh.Revoke(c.Request.Context(), raw)
+	}
+	h.clearAuthCookies(c)
 	httpx.OK(c, http.StatusOK, gin.H{"loggedOut": true})
 }
 
