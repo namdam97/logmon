@@ -133,7 +133,9 @@ func newRouterWith(t *testing.T, rf *fakeRefresher) *gin.Engine {
 	svc := app.NewService(repo, fakeHasher{}, fixedID{id: "user-1"}, fixedClock{}, jwtSvc)
 
 	r := gin.New()
-	h := userhttp.NewHandler(svc, rf, userhttp.CookieConfig{
+	csrf, err := auth.NewCSRFProtector("handler-test-csrf-secret-0123456789")
+	require.NoError(t, err)
+	h := userhttp.NewHandler(svc, rf, csrf, userhttp.CookieConfig{
 		Secure: false, MaxAgeSeconds: 3600, RefreshMaxAgeSeconds: 1209600,
 	})
 	// Rate limit cao để không cản test gọi nhiều request.
@@ -243,6 +245,25 @@ func TestLogoutClearsCookie(t *testing.T) {
 	require.NotNil(t, cleared, "logout phải gửi Set-Cookie để xoá cookie")
 	require.Empty(t, cleared.Value)
 	require.True(t, cleared.MaxAge < 0, "cookie phải bị huỷ (MaxAge<0)")
+}
+
+func TestLoginSetsCSRFCookie(t *testing.T) {
+	r := newRouter(t)
+	reg := doJSON(t, r, http.MethodPost, "/api/v1/users", `{"email":"a@b.com","password":"password123"}`, nil)
+	require.Equal(t, http.StatusCreated, reg.Code)
+
+	login := doJSON(t, r, http.MethodPost, "/api/v1/auth/login", `{"email":"a@b.com","password":"password123"}`, nil)
+	require.Equal(t, http.StatusOK, login.Code)
+
+	csrf := cookieByName(login, auth.CSRFCookieName)
+	require.NotNil(t, csrf, "login phải set cookie CSRF")
+	require.NotEmpty(t, csrf.Value)
+	require.False(t, csrf.HttpOnly, "cookie CSRF phải đọc được bởi JS (không HttpOnly)")
+
+	logout := doJSON(t, r, http.MethodPost, "/api/v1/auth/logout", "", nil)
+	cleared := cookieByName(logout, auth.CSRFCookieName)
+	require.NotNil(t, cleared)
+	require.True(t, cleared.MaxAge < 0, "logout phải xoá cookie CSRF")
 }
 
 func extractID(t *testing.T, w *httptest.ResponseRecorder) string {

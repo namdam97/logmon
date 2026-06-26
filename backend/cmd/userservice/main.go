@@ -4,6 +4,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -74,6 +77,7 @@ type config struct {
 	promURL        string
 	alertmgrURL    string
 	webhookToken   string
+	csrfSecret     string
 }
 
 func loadConfig() config {
@@ -90,7 +94,19 @@ func loadConfig() config {
 		promURL:        envOr("PROMETHEUS_URL", _defaultPromURL),
 		alertmgrURL:    envOr("ALERTMANAGER_URL", _defaultAlertmgrURL),
 		webhookToken:   os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN"),
+		csrfSecret:     os.Getenv("CSRF_SECRET"),
 	}
+}
+
+// csrfSecret trả về khoá CSRF: ưu tiên CSRF_SECRET, nếu rỗng thì derive từ JWT
+// secret qua HMAC (tách miền khỏi việc ký JWT). Luôn trả chuỗi đủ dài (hex 64 ký tự).
+func csrfSecret(cfg config) string {
+	if cfg.csrfSecret != "" {
+		return cfg.csrfSecret
+	}
+	mac := hmac.New(sha256.New, []byte(cfg.jwtSecret))
+	mac.Write([]byte("logmon-csrf-v1"))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // alertingDeps gom các thành phần alerting BC dựng ở composition root.
@@ -167,6 +183,13 @@ func run() error {
 		return fmt.Errorf("init jwt: %w", err)
 	}
 
+	// CSRF dùng khoá riêng tách miền với JWT (domain separation): CSRF_SECRET nếu
+	// có, ngược lại derive từ JWT secret qua HMAC để không cần thêm secret bắt buộc.
+	csrf, err := auth.NewCSRFProtector(csrfSecret(cfg))
+	if err != nil {
+		return fmt.Errorf("init csrf: %w", err)
+	}
+
 	if !cfg.cookieSecure {
 		log.Info(context.Background(), "WARNING: COOKIE_SECURE=false — chỉ dùng cho local dev, KHÔNG dùng production")
 	}
@@ -213,7 +236,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, pool, jwtSvc, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, pool, jwtSvc, csrf, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -254,6 +277,7 @@ func buildRouter(
 	alerting alertingDeps,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
+	csrf *auth.CSRFProtector,
 	cookieSecure bool,
 	allowedOrigin string,
 	authRatePerMin, authRateBurst int,
@@ -282,7 +306,16 @@ func buildRouter(
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(mx.Registry(), promhttp.HandlerOpts{})))
 
 	api := r.Group("/api/v1")
-	handler := userhttp.NewHandler(svc, refreshSvc, userhttp.CookieConfig{
+	// CSRF double-submit cho mọi route mutating dùng cookie session. Miễn trừ:
+	// register/login (chưa có session), refresh (bảo vệ bằng refresh cookie HttpOnly
+	// + SameSite), webhook (xác thực bearer token, không dùng cookie).
+	api.Use(csrf.Middleware(
+		"/api/v1/users",
+		"/api/v1/auth/login",
+		"/api/v1/auth/refresh",
+		"/api/v1/alerts/webhook",
+	))
+	handler := userhttp.NewHandler(svc, refreshSvc, csrf, userhttp.CookieConfig{
 		Secure:               cookieSecure,
 		MaxAgeSeconds:        int(_defaultJWTTTL.Seconds()),
 		RefreshMaxAgeSeconds: int(_defaultRefreshTTL.Seconds()),

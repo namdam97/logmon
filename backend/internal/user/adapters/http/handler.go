@@ -40,19 +40,27 @@ type refresher interface {
 	Revoke(ctx context.Context, rawRefresh string) error
 }
 
+// csrfIssuer phát hành token CSRF để set vào cookie lm_csrf khi đăng nhập/refresh (ISP).
+type csrfIssuer interface {
+	Issue() (string, error)
+}
+
 // Handler gắn các use case của user vào HTTP routes.
 type Handler struct {
 	svc      *app.Service
 	refresh  refresher
+	csrf     csrfIssuer
 	validate *validator.Validate
 	cookie   CookieConfig
 }
 
-// NewHandler tạo Handler với application service, refresh service và cấu hình cookie.
-func NewHandler(svc *app.Service, refresh refresher, cookie CookieConfig) *Handler {
+// NewHandler tạo Handler với application service, refresh service, CSRF issuer và
+// cấu hình cookie.
+func NewHandler(svc *app.Service, refresh refresher, csrf csrfIssuer, cookie CookieConfig) *Handler {
 	return &Handler{
 		svc:      svc,
 		refresh:  refresh,
+		csrf:     csrf,
 		validate: validator.New(validator.WithRequiredStructEnabled()),
 		cookie:   cookie,
 	}
@@ -69,18 +77,27 @@ func (h *Handler) Register(rg *gin.RouterGroup, authMW, rateMW gin.HandlerFunc) 
 	rg.GET("/me", authMW, h.me)
 }
 
-// setAuthCookies set access + refresh cookie (HttpOnly, Secure, SameSite=Strict).
-func (h *Handler) setAuthCookies(c *gin.Context, access, refresh string) {
+// setAuthCookies set access + refresh + csrf cookie (Secure, SameSite=Strict).
+// access/refresh là HttpOnly; csrf KHÔNG HttpOnly để SPA đọc và echo qua header
+// X-CSRF-Token (double-submit). Trả lỗi nếu không phát hành được CSRF token.
+func (h *Handler) setAuthCookies(c *gin.Context, access, refresh string) error {
+	csrf, err := h.csrf.Issue()
+	if err != nil {
+		return err
+	}
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(auth.CookieName, access, h.cookie.MaxAgeSeconds, "/", "", h.cookie.Secure, true)
 	c.SetCookie(_refreshCookieName, refresh, h.cookie.RefreshMaxAgeSeconds, _refreshCookiePath, "", h.cookie.Secure, true)
+	c.SetCookie(auth.CSRFCookieName, csrf, h.cookie.MaxAgeSeconds, "/", "", h.cookie.Secure, false)
+	return nil
 }
 
-// clearAuthCookies xoá cả hai cookie (maxAge < 0).
+// clearAuthCookies xoá cả ba cookie (maxAge < 0).
 func (h *Handler) clearAuthCookies(c *gin.Context) {
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(auth.CookieName, "", -1, "/", "", h.cookie.Secure, true)
 	c.SetCookie(_refreshCookieName, "", -1, _refreshCookiePath, "", h.cookie.Secure, true)
+	c.SetCookie(auth.CSRFCookieName, "", -1, "/", "", h.cookie.Secure, false)
 }
 
 type registerRequest struct {
@@ -154,7 +171,10 @@ func (h *Handler) login(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	h.setAuthCookies(c, token, refresh)
+	if err := h.setAuthCookies(c, token, refresh); err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	httpx.OK(c, http.StatusOK, toResponse(user))
 }
 
@@ -178,7 +198,11 @@ func (h *Handler) refreshToken(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	h.setAuthCookies(c, pair.Access, pair.Refresh)
+	if err := h.setAuthCookies(c, pair.Access, pair.Refresh); err != nil {
+		h.clearAuthCookies(c)
+		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	httpx.OK(c, http.StatusOK, gin.H{"refreshed": true})
 }
 
