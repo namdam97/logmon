@@ -26,3 +26,12 @@ datasources:
       logMessageField: body.text
       logLevelField: severity_text
     editable: false
+
+  # Traces (doc_v2/04 §2.4): Jaeger v2 nhận OTLP từ gateway. Liên kết
+  # traces→logs (theo trace_id) cấu hình ở bước correlation khi log đã mang trace_id.
+  - name: Jaeger
+    type: jaeger
+    uid: jaeger
+    url: http://jaeger:16686
+    access: proxy
+    editable: false

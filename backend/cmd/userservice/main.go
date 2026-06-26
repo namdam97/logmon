@@ -16,9 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"github.com/namdam97/logmon/backend/internal/alerting/adapters/alertmanager"
 	alertinghttp "github.com/namdam97/logmon/backend/internal/alerting/adapters/http"
@@ -34,6 +36,7 @@ import (
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
 	"github.com/namdam97/logmon/backend/internal/shared/middleware"
 	"github.com/namdam97/logmon/backend/internal/shared/outbox"
+	"github.com/namdam97/logmon/backend/internal/shared/tracing"
 	userhttp "github.com/namdam97/logmon/backend/internal/user/adapters/http"
 	userpg "github.com/namdam97/logmon/backend/internal/user/adapters/postgres"
 	usersys "github.com/namdam97/logmon/backend/internal/user/adapters/system"
@@ -41,6 +44,7 @@ import (
 )
 
 const (
+	_serviceName       = "userservice" // service.name trong span + OTEL_SERVICE_NAME default
 	_defaultPort       = "8080"
 	_shutdownTimeout   = 10 * time.Second
 	_readHeaderTimeout = 5 * time.Second
@@ -78,6 +82,9 @@ type config struct {
 	alertmgrURL    string
 	webhookToken   string
 	csrfSecret     string
+	otelEndpoint   string
+	otelService    string
+	otelInsecure   bool
 }
 
 func loadConfig() config {
@@ -95,6 +102,10 @@ func loadConfig() config {
 		alertmgrURL:    envOr("ALERTMANAGER_URL", _defaultAlertmgrURL),
 		webhookToken:   os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN"),
 		csrfSecret:     os.Getenv("CSRF_SECRET"),
+		// OTLP gRPC endpoint (host:port). Rỗng → tracing tắt (dev stack nhẹ).
+		otelEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		otelService:  envOr("OTEL_SERVICE_NAME", _serviceName),
+		otelInsecure: envOr("OTEL_EXPORTER_OTLP_INSECURE", "true") != "false",
 	}
 }
 
@@ -197,9 +208,36 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Tracing: xuất span qua OTLP gRPC sang OTel agent (doc_v2/04 §2). Endpoint
+	// rỗng → no-op. Shutdown flush span còn lại trước khi thoát.
+	tp, err := tracing.New(ctx, tracing.Config{
+		ServiceName: cfg.otelService,
+		Endpoint:    cfg.otelEndpoint,
+		Insecure:    cfg.otelInsecure,
+	})
+	if err != nil {
+		return fmt.Errorf("init tracing: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), _shutdownTimeout)
+		defer cancel()
+		if err := tp.Shutdown(shutdownCtx); err != nil {
+			log.Error(context.Background(), err, "tracer shutdown")
+		}
+	}()
+	if tp.Enabled() {
+		log.Infof(context.Background(), "tracing enabled", "endpoint", cfg.otelEndpoint)
+	}
+
 	connectCtx, cancel := context.WithTimeout(ctx, _dbConnectTimeout)
 	defer cancel()
-	pool, err := pgxpool.New(connectCtx, cfg.databaseURL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.databaseURL)
+	if err != nil {
+		return fmt.Errorf("parse database url: %w", err)
+	}
+	// otelpgx: span cho mỗi query (dùng global TracerProvider — no-op khi tracing tắt).
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	pool, err := pgxpool.NewWithConfig(connectCtx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -236,7 +274,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, pool, jwtSvc, csrf, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -278,6 +316,7 @@ func buildRouter(
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	csrf *auth.CSRFProtector,
+	serviceName string,
 	cookieSecure bool,
 	allowedOrigin string,
 	authRatePerMin, authRateBurst int,
@@ -287,6 +326,9 @@ func buildRouter(
 	r := gin.New()
 	r.Use(
 		middleware.Recovery(log),
+		// otelgin: tạo server span cho mỗi request (#2 trong chain, doc_v2/04 §2.1).
+		// Bỏ qua /healthz + /metrics để không nhiễu trace probe/scrape.
+		otelgin.Middleware(serviceName, otelgin.WithGinFilter(shouldTrace)),
 		middleware.TraceID(),
 		middleware.CORS(allowedOrigin),
 		middleware.SecurityHeaders(),
@@ -326,6 +368,17 @@ func buildRouter(
 	alerting.instanceHandler.Register(api, auth.RequireAuth(jwtSvc), auth.RequireBearerToken(webhookToken))
 	alerting.silenceHandler.Register(api, auth.RequireAuth(jwtSvc))
 	return r
+}
+
+// shouldTrace báo otelgin có tạo span cho request không — bỏ qua probe/scrape
+// (/healthz, /metrics) vì chúng tần suất cao và không mang giá trị chẩn đoán.
+func shouldTrace(c *gin.Context) bool {
+	switch c.Request.URL.Path {
+	case "/healthz", "/metrics":
+		return false
+	default:
+		return true
+	}
 }
 
 func envOr(key, fallback string) string {

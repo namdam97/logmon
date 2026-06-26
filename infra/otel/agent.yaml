@@ -8,6 +8,11 @@ extensions:
     directory: /var/lib/otelcol
 
 receivers:
+  # Trace từ OTel SDK của các service (userservice → otel-agent:4317). GĐ2.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
   filelog:
     include: [/var/lib/docker/containers/*/*-json.log]
     start_at: end
@@ -64,5 +69,11 @@ service:
   pipelines:
     logs:
       receivers: [filelog]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/gateway]
+    # Trace chỉ forward thô lên gateway; tail_sampling + spanmetrics ở gateway
+    # (mọi span của 1 trace phải về cùng gateway — doc_v2/04 §2.2).
+    traces:
+      receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlp/gateway]

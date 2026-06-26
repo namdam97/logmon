@@ -32,11 +32,11 @@ doctor: ## Kiểm tra toolchain local (docker/compose/go/pnpm/chrome)
 up: ## Dựng stack nhẹ: postgres + migrate + userservice
 	$(COMPOSE) up -d --build
 
-up-full: ## Dựng full: thêm observability (ES/Grafana/Prometheus/Alertmanager/OTel)
-	$(COMPOSE) --profile observability up -d --build
+up-full: ## Dựng full: thêm observability (ES/Grafana/Prometheus/Alertmanager/OTel/Jaeger)
+	OTEL_EXPORTER_OTLP_ENDPOINT=otel-agent:4317 $(COMPOSE) --profile observability up -d --build
 
 up-demo: ## Dựng full + demo workload (demo-order + loadgen)
-	$(COMPOSE) --profile observability --profile demo up -d --build
+	OTEL_EXPORTER_OTLP_ENDPOINT=otel-agent:4317 $(COMPOSE) --profile observability --profile demo up -d --build
 
 down: ## Dừng + xoá container (giữ volume/data)
 	$(COMPOSE) --profile observability --profile demo down

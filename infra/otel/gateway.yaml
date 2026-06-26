@@ -32,6 +32,21 @@ processors:
   batch:
     timeout: 5s
     send_batch_size: 512
+  # Tail sampling (doc_v2/04 §2.2): giữ trace lỗi + chậm, drop health-check,
+  # còn lại lấy mẫu 10%. Mọi span của 1 trace phải về cùng gateway (1 gateway dev → OK).
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 50000
+    policies:
+      - name: errors-always
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: slow-requests
+        type: latency
+        latency: { threshold_ms: 1000 }
+      - name: probabilistic-default
+        type: probabilistic
+        probabilistic: { sampling_percentage: 10 }
 
 exporters:
   # Dùng OTel-native mapping mode (default từ v0.154 — `mapping::mode: ecs` đã
@@ -47,6 +62,11 @@ exporters:
     sending_queue:
       enabled: true
       storage: file_storage
+  # Trace → Jaeger v2 qua OTLP gRPC (ADR-020). Network nội bộ → insecure.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
 
 service:
   extensions: [file_storage]
@@ -63,3 +83,9 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, transform/datastream, batch]
       exporters: [elasticsearch]
+    # spanmetrics connector (RED + exemplars, doc_v2/04 §2.3) bổ sung ở bước
+    # correlation sau — pipeline trace cơ bản → Jaeger trước.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlp/jaeger]

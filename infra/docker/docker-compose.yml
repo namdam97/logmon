@@ -80,6 +80,11 @@ services:
       # Webhook receiver (GĐ2.3): PHẢI khớp secrets/logmon_webhook_token.txt mà
       # Alertmanager dùng. Rỗng → receiver fail-closed (mọi webhook trả 401).
       ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-local-dev-webhook-token}
+      # Tracing (doc_v2/04 §2): rỗng → tắt. Stack nhẹ `make up` để rỗng (không có
+      # OTel agent); `make up-full`/`up-demo` set otel-agent:4317 qua env recipe.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: userservice
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     volumes:
       - genrules:/etc/prometheus/generated
     ports:
@@ -318,6 +323,8 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     deploy:
       resources:
         limits:
@@ -340,6 +347,20 @@ services:
       resources:
         limits:
           memory: 256m
+
+  # Jaeger v2 (ADR-020) — nhận OTLP từ gateway, hiển thị trace waterfall.
+  # Dev: storage in-memory mặc định của image (đủ cho demo); production dùng ES
+  # (index prefix jaeger-, doc_v2/04 §2.4). UI :16686.
+  jaeger:
+    profiles: [observability]
+    image: jaegertracing/jaeger:2.10.0
+    restart: unless-stopped
+    ports:
+      - "16686:16686" # Jaeger UI
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
   elasticsearch-exporter:
     profiles: [observability]
