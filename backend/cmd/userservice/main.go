@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"github.com/namdam97/logmon/backend/internal/alerting/adapters/alertmanager"
@@ -34,7 +36,17 @@ import (
 	"github.com/namdam97/logmon/backend/internal/logpipeline/adapters/elasticsearch"
 	loghttp "github.com/namdam97/logmon/backend/internal/logpipeline/adapters/http"
 	logquery "github.com/namdam97/logmon/backend/internal/logpipeline/app/query"
+	notifhttp "github.com/namdam97/logmon/backend/internal/notification/adapters/http"
+	notifpg "github.com/namdam97/logmon/backend/internal/notification/adapters/postgres"
+	"github.com/namdam97/logmon/backend/internal/notification/adapters/redisqueue"
+	"github.com/namdam97/logmon/backend/internal/notification/adapters/sender"
+	notifsys "github.com/namdam97/logmon/backend/internal/notification/adapters/system"
+	notifcommand "github.com/namdam97/logmon/backend/internal/notification/app/command"
+	"github.com/namdam97/logmon/backend/internal/notification/app/notify"
+	notifworker "github.com/namdam97/logmon/backend/internal/notification/app/worker"
+	notifdomain "github.com/namdam97/logmon/backend/internal/notification/domain"
 	"github.com/namdam97/logmon/backend/internal/shared/auth"
+	"github.com/namdam97/logmon/backend/internal/shared/crypto"
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
 	"github.com/namdam97/logmon/backend/internal/shared/middleware"
@@ -100,6 +112,10 @@ type config struct {
 	esURL          string
 	esUsername     string
 	esPassword     string
+	redisAddr      string
+	redisPassword  string
+	notifKeyID     string
+	notifEncKey    string
 }
 
 func loadConfig() config {
@@ -125,6 +141,12 @@ func loadConfig() config {
 		esURL:      os.Getenv("ELASTICSEARCH_URL"),
 		esUsername: envOr("ELASTICSEARCH_USERNAME", "elastic"),
 		esPassword: os.Getenv("ELASTICSEARCH_PASSWORD"),
+		// Notification delivery (GĐ3.2). REDIS_ADDR rỗng → delivery worker tắt
+		// (CRUD kênh vẫn chạy). notifEncKey rỗng → derive từ JWT secret (HMAC).
+		redisAddr:     os.Getenv("REDIS_ADDR"),
+		redisPassword: os.Getenv("REDIS_PASSWORD"),
+		notifKeyID:    envOr("NOTIFICATION_KEY_ID", "v1"),
+		notifEncKey:   os.Getenv("NOTIFICATION_ENCRYPTION_KEY"),
 	}
 }
 
@@ -244,6 +266,90 @@ func joinKV(msg string, kv ...any) string {
 	return out
 }
 
+// notifDeps gom các thành phần notification BC dựng ở composition root. worker +
+// queue nil khi REDIS_ADDR rỗng (delivery tắt, CRUD vẫn chạy).
+type notifDeps struct {
+	handler *notifhttp.Handler
+	worker  *notifworker.Worker
+	queue   *redisqueue.Queue
+}
+
+// notifEncKey trả key mã hóa config kênh: ưu tiên NOTIFICATION_ENCRYPTION_KEY,
+// rỗng thì derive từ JWT secret qua HMAC (tách miền khỏi JWT/CSRF).
+func notifEncKey(cfg config) []byte {
+	if cfg.notifEncKey != "" {
+		return crypto.KeyFromPassphrase(cfg.notifEncKey)
+	}
+	mac := hmac.New(sha256.New, []byte(cfg.jwtSecret))
+	mac.Write([]byte("logmon-notif-enc-v1"))
+	return mac.Sum(nil)
+}
+
+// buildNotification dựng notification BC (GĐ3.2): CRUD kênh (config mã hóa
+// AES-GCM at-rest) + delivery qua Redis Streams. Subscribe BudgetExhausted (SLO)
+// → render template → enqueue; worker tiêu thụ → Sender gửi → ghi history.
+// rdb nil → worker/queue nil (delivery tắt). Trả lỗi nếu cipher init lỗi.
+func buildNotification(pool *pgxpool.Pool, cfg config, bus *outbox.Bus, log *logger.Logger, rdb *redis.Client) (notifDeps, error) {
+	cipher, err := crypto.NewCipher(cfg.notifKeyID, notifEncKey(cfg))
+	if err != nil {
+		return notifDeps{}, fmt.Errorf("init notification cipher: %w", err)
+	}
+	repo := notifpg.NewChannelRepository(pool, cipher)
+	histRepo := notifpg.NewHistoryRepository(pool)
+	txm := notifpg.NewTxManager(pool)
+	ids := notifsys.NewUUIDGenerator()
+	clock := notifsys.NewClock()
+	senders := sender.Registry()
+
+	create := notifcommand.NewCreateChannelHandler(txm, repo, ids, clock)
+	update := notifcommand.NewUpdateChannelHandler(txm, repo, repo, clock)
+	del := notifcommand.NewDeleteChannelHandler(txm, repo)
+	tester := notify.NewTestHandler(repo, senders)
+	handler := notifhttp.NewHandler(create, update, del, tester, repo, histRepo, _defaultWorkspaceID)
+
+	if rdb == nil {
+		log.Info(context.Background(), "REDIS_ADDR chưa set — notification delivery worker tắt (CRUD kênh vẫn chạy)")
+		return notifDeps{handler: handler}, nil
+	}
+
+	queue := redisqueue.New(rdb, _serviceName, nil)
+	sendH, err := notify.NewSendHandler(repo, queue, notifLog{log})
+	if err != nil {
+		return notifDeps{}, fmt.Errorf("init send handler: %w", err)
+	}
+	worker := notifworker.NewWorker(queue, queue, senders, histRepo, clock, log)
+	bus.Subscribe(slodomain.EventBudgetExhausted, budgetExhaustedToSend(sendH))
+
+	return notifDeps{handler: handler, worker: worker, queue: queue}, nil
+}
+
+// budgetExhaustedToSend map outbox event BudgetExhausted → SendInput (slo_budget_warning).
+func budgetExhaustedToSend(sendH *notify.SendHandler) outbox.Handler {
+	return func(ctx context.Context, e outbox.Event) error {
+		var p slodomain.BudgetExhaustedPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal budget exhausted payload: %w", err)
+		}
+		return sendH.Handle(ctx, notify.SendInput{
+			WorkspaceID: p.WorkspaceID,
+			EventType:   notifdomain.EventSLOBudgetWarning,
+			EventRef:    p.SLOID,
+			Data: map[string]string{
+				"sloName":         p.SLOID,
+				"service":         p.Service,
+				"budgetRemaining": fmt.Sprintf("%.2f%%", p.BudgetRemainingPercent),
+			},
+			DedupKey: "slo-budget-" + p.SLOID,
+		})
+	}
+}
+
+// notifLog adapt shared logger sang notify.Logger (Warn) — không có Warn riêng,
+// map sang Info có tiền tố.
+type notifLog struct{ log *logger.Logger }
+
+func (l notifLog) Warn(ctx context.Context, msg string) { l.log.Info(ctx, "WARN: "+msg) }
+
 // envIntOr đọc một biến môi trường số nguyên dương; rỗng/không hợp lệ → fallback.
 func envIntOr(key string, fallback int) int {
 	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
@@ -343,9 +449,33 @@ func run() error {
 	bus := outbox.NewBus()
 	alerting := buildAlerting(pool, cfg, bus)
 	slo := buildSLO(pool, cfg, bus, log)
+
+	// Notification delivery (GĐ3.2): Redis Streams queue + worker. REDIS_ADDR rỗng
+	// → delivery tắt (CRUD kênh vẫn chạy). Đăng ký BC TRƯỚC khi relay.Run để
+	// subscription (BudgetExhausted → send) sẵn sàng khi event đầu tiên dispatch.
+	var rdb *redis.Client
+	if cfg.redisAddr != "" {
+		rdb = redis.NewClient(&redis.Options{Addr: cfg.redisAddr, Password: cfg.redisPassword})
+		defer func() {
+			if err := rdb.Close(); err != nil {
+				log.Error(context.Background(), err, "close redis")
+			}
+		}()
+	}
+	notif, err := buildNotification(pool, cfg, bus, log, rdb)
+	if err != nil {
+		return err
+	}
+
 	relay := outbox.NewRelay(outbox.NewStore(pool), bus.Dispatch)
 	go relay.Run(ctx)
 	go slo.snapshotJob.Run(ctx) // budget snapshot định kỳ (stop qua ctx)
+	if notif.worker != nil {
+		if err := notif.queue.EnsureGroup(ctx); err != nil {
+			return fmt.Errorf("ensure delivery group: %w", err)
+		}
+		go notif.worker.Run(ctx) // tiêu thụ delivery queue (stop qua ctx)
+	}
 
 	// Log search (GĐ2.8): truy vấn data stream logs-* trên Elasticsearch. Optional —
 	// ELASTICSEARCH_URL rỗng (stack nhẹ) → không đăng ký /logs.
@@ -361,7 +491,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -401,6 +531,7 @@ func buildRouter(
 	refreshSvc *userapp.RefreshService,
 	alerting alertingDeps,
 	slo sloDeps,
+	notif notifDeps,
 	logHandler *loghttp.LogHandler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
@@ -457,6 +588,7 @@ func buildRouter(
 	alerting.instanceHandler.Register(api, auth.RequireAuth(jwtSvc), auth.RequireBearerToken(webhookToken))
 	alerting.silenceHandler.Register(api, auth.RequireAuth(jwtSvc))
 	slo.handler.Register(api, auth.RequireAuth(jwtSvc))
+	notif.handler.Register(api, auth.RequireAuth(jwtSvc))
 	if logHandler != nil {
 		logHandler.Register(api, auth.RequireAuth(jwtSvc))
 	}

@@ -37,7 +37,7 @@ func postJSON(ctx context.Context, client *http.Client, url string, body any) er
 	if err != nil {
 		return fmt.Errorf("post: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, _maxErrBody))
 		return fmt.Errorf("status %d: %s", resp.StatusCode, bytes.TrimSpace(snippet))

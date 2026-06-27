@@ -58,7 +58,7 @@ type QueueItem struct {
 // QueueConsumer tiêu thụ delivery queue (consumer group). Read block tối đa
 // block để chờ item mới; Ack xác nhận đã xử lý xong (at-least-once).
 type QueueConsumer interface {
-	Read(ctx context.Context, max int, block time.Duration) ([]QueueItem, error)
+	Read(ctx context.Context, maxItems int, block time.Duration) ([]QueueItem, error)
 	Ack(ctx context.Context, ids ...string) error
 }
 

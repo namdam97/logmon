@@ -84,7 +84,7 @@ func (w *Worker) process(ctx context.Context, it ports.QueueItem) {
 
 	sender, ok := w.senders[msg.ChannelType]
 	if !ok {
-		w.record(ctx, msg, domain.StatusFailed, 0, "unsupported channel type: "+msg.ChannelType)
+		w.record(ctx, msg, domain.StatusFailed, "unsupported channel type: "+msg.ChannelType)
 		return
 	}
 
@@ -97,18 +97,18 @@ func (w *Worker) process(ctx context.Context, it ports.QueueItem) {
 	err := sender.Send(ctx, msg)
 	if err == nil {
 		w.breaker.Success(msg.ChannelID)
-		w.record(ctx, msg, domain.StatusSent, 0, "")
+		w.record(ctx, msg, domain.StatusSent, "")
 		return
 	}
 
 	w.breaker.Failure(msg.ChannelID)
 	next := msg.Attempt + 1
 	if next < len(_retryBackoff) {
-		w.record(ctx, msg, domain.StatusRetrying, 0, err.Error())
+		w.record(ctx, msg, domain.StatusRetrying, err.Error())
 		w.requeue(ctx, msg, _retryBackoff[next])
 		return
 	}
-	w.record(ctx, msg, domain.StatusFailed, 0, err.Error())
+	w.record(ctx, msg, domain.StatusFailed, err.Error())
 }
 
 func (w *Worker) requeue(ctx context.Context, msg domain.Message, delay time.Duration) {
@@ -125,14 +125,13 @@ func (w *Worker) ack(ctx context.Context, id string) {
 	}
 }
 
-func (w *Worker) record(ctx context.Context, msg domain.Message, status domain.DeliveryStatus, code int, errMsg string) {
+func (w *Worker) record(ctx context.Context, msg domain.Message, status domain.DeliveryStatus, errMsg string) {
 	entry := domain.HistoryEntry{
 		WorkspaceID:  msg.WorkspaceID,
 		ChannelID:    msg.ChannelID,
 		EventType:    msg.EventType,
 		EventRef:     msg.EventRef,
 		Status:       status,
-		ResponseCode: code,
 		ErrorMessage: errMsg,
 		SentAt:       w.clock.Now(),
 	}

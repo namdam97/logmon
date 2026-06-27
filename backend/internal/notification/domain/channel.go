@@ -200,17 +200,35 @@ func (c Channel) SubscribesTo(eventType string) bool {
 	return false
 }
 
-// Accessors.
-func (c Channel) ID() ChannelID                 { return c.id }
-func (c Channel) WorkspaceID() string           { return c.workspaceID }
-func (c Channel) Name() string                  { return c.name }
-func (c Channel) Type() ChannelType             { return c.channelType }
-func (c Channel) Config() map[string]string     { return copyMap(c.config) }
+// ID trả về định danh channel.
+func (c Channel) ID() ChannelID { return c.id }
+
+// WorkspaceID trả về workspace sở hữu channel.
+func (c Channel) WorkspaceID() string { return c.workspaceID }
+
+// Name trả về tên channel (duy nhất trong workspace).
+func (c Channel) Name() string { return c.name }
+
+// Type trả về loại kênh.
+func (c Channel) Type() ChannelType { return c.channelType }
+
+// Config trả về bản copy config (plaintext) — gồm secret, chỉ dùng nội bộ.
+func (c Channel) Config() map[string]string { return copyMap(c.config) }
+
+// ConfigValue trả về giá trị config theo key (rỗng nếu không có).
 func (c Channel) ConfigValue(key string) string { return c.config[key] }
-func (c Channel) Events() []string              { return copySlice(c.events) }
-func (c Channel) IsEnabled() bool               { return c.enabled }
-func (c Channel) CreatedAt() time.Time          { return c.createdAt }
-func (c Channel) UpdatedAt() time.Time          { return c.updatedAt }
+
+// Events trả về bản copy danh sách event type đã đăng ký.
+func (c Channel) Events() []string { return copySlice(c.events) }
+
+// IsEnabled cho biết channel có đang bật không.
+func (c Channel) IsEnabled() bool { return c.enabled }
+
+// CreatedAt trả về thời điểm tạo.
+func (c Channel) CreatedAt() time.Time { return c.createdAt }
+
+// UpdatedAt trả về thời điểm cập nhật gần nhất.
+func (c Channel) UpdatedAt() time.Time { return c.updatedAt }
 
 func copyMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))

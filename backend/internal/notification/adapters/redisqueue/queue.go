@@ -87,7 +87,7 @@ func (q *Queue) add(ctx context.Context, data []byte) error {
 }
 
 // Read promote item delayed tới hạn rồi XREADGROUP. Block tối đa block để chờ.
-func (q *Queue) Read(ctx context.Context, max int, block time.Duration) ([]ports.QueueItem, error) {
+func (q *Queue) Read(ctx context.Context, maxItems int, block time.Duration) ([]ports.QueueItem, error) {
 	if err := q.promoteDue(ctx); err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (q *Queue) Read(ctx context.Context, max int, block time.Duration) ([]ports
 		Group:    _group,
 		Consumer: q.consumer,
 		Streams:  []string{_streamKey, ">"},
-		Count:    int64(max),
+		Count:    int64(maxItems),
 		Block:    block,
 	}).Result()
 	if errors.Is(err, redis.Nil) {
