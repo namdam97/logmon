@@ -41,6 +41,7 @@ import (
 	incidentcommand "github.com/namdam97/logmon/backend/internal/incident/app/command"
 	incidentquery "github.com/namdam97/logmon/backend/internal/incident/app/query"
 	incidentdomain "github.com/namdam97/logmon/backend/internal/incident/domain"
+	incidentports "github.com/namdam97/logmon/backend/internal/incident/ports"
 	"github.com/namdam97/logmon/backend/internal/logpipeline/adapters/elasticsearch"
 	loghttp "github.com/namdam97/logmon/backend/internal/logpipeline/adapters/http"
 	logquery "github.com/namdam97/logmon/backend/internal/logpipeline/app/query"
@@ -76,15 +77,16 @@ import (
 )
 
 const (
-	_serviceName       = "userservice" // service.name trong span + OTEL_SERVICE_NAME default
-	_defaultPort       = "8080"
-	_shutdownTimeout   = 10 * time.Second
-	_readHeaderTimeout = 5 * time.Second
-	_dbConnectTimeout  = 10 * time.Second
-	_defaultJWTTTL     = 15 * time.Minute    // access token ngắn (ADR-023)
-	_defaultRefreshTTL = 14 * 24 * time.Hour // refresh token dài
-	_authRatePerMinute = 10                  // mặc định: giới hạn login/register mỗi IP
-	_authRateBurst     = 5
+	_serviceName             = "userservice" // service.name trong span + OTEL_SERVICE_NAME default
+	_defaultPort             = "8080"
+	_shutdownTimeout         = 10 * time.Second
+	_readHeaderTimeout       = 5 * time.Second
+	_dbConnectTimeout        = 10 * time.Second
+	_escalationSweepInterval = time.Minute         // chu kỳ quét escalation (GĐ3.4)
+	_defaultJWTTTL           = 15 * time.Minute    // access token ngắn (ADR-023)
+	_defaultRefreshTTL       = 14 * 24 * time.Hour // refresh token dài
+	_authRatePerMinute       = 10                  // mặc định: giới hạn login/register mỗi IP
+	_authRateBurst           = 5
 
 	// _defaultWorkspaceID là workspace mặc định GĐ2 (multi-tenancy đầy đủ ở GĐ3).
 	_defaultWorkspaceID = "00000000-0000-0000-0000-000000000001"
@@ -361,14 +363,18 @@ func (l notifLog) Warn(ctx context.Context, msg string) { l.log.Info(ctx, "WARN:
 
 // incidentDeps gom các thành phần incident BC dựng ở composition root.
 type incidentDeps struct {
-	handler *incidenthttp.Handler
+	handler       *incidenthttp.Handler
+	oncallHandler *incidenthttp.OnCallHandler
+	escalation    *incidentcommand.EscalationService // nil khi delivery tắt
 }
 
-// buildIncident dựng incident BC (GĐ3.3): state machine 7 trạng thái + timeline
-// (transactional outbox) + metrics MTTA/MTTR (registry dùng chung). Subscribe
-// BudgetExhausted (SLO) → auto-create SEV2 incident (dedup theo sloId). Sự kiện
-// IncidentCreated/Resolved phát ra outbox để notification gửi (wire ở run()).
-func buildIncident(pool *pgxpool.Pool, bus *outbox.Bus, reg prometheus.Registerer) incidentDeps {
+// buildIncident dựng incident BC (GĐ3.3-3.4): state machine 7 trạng thái + timeline
+// (transactional outbox) + metrics MTTA/MTTR (registry dùng chung) + on-call &
+// escalation (doc_v2/06 §1.4). Subscribe BudgetExhausted (SLO) → auto-create SEV2
+// incident (dedup theo sloId). IncidentCreated/Resolved phát ra outbox để
+// notification gửi (wire ở run()). Escalation runner chỉ bật khi sendH != nil
+// (cần Notification Hub để giao thông báo escalation).
+func buildIncident(pool *pgxpool.Pool, bus *outbox.Bus, reg prometheus.Registerer, sendH *notify.SendHandler) incidentDeps {
 	store := outbox.NewStore(pool)
 	repo := incidentpg.NewIncidentRepository(pool)
 	tlRepo := incidentpg.NewTimelineRepository(pool)
@@ -383,8 +389,71 @@ func buildIncident(pool *pgxpool.Pool, bus *outbox.Bus, reg prometheus.Registere
 	queries := incidentquery.NewIncidentQueries(repo, tlRepo)
 	handler := incidenthttp.NewHandler(create, trans, queries, _defaultWorkspaceID)
 
+	// On-call & escalation (GĐ3.4): schedule/override/policy CRUD + "ai on-call".
+	schedRepo := incidentpg.NewScheduleRepo(pool)
+	ovRepo := incidentpg.NewOverrideRepo(pool)
+	polRepo := incidentpg.NewEscalationPolicyRepo(pool)
+	stateRepo := incidentpg.NewEscalationStateRepo(pool)
+	createSched := incidentcommand.NewCreateScheduleHandler(schedRepo, ids, clock)
+	createOv := incidentcommand.NewCreateOverrideHandler(ovRepo, schedRepo, ids, clock)
+	createPol := incidentcommand.NewCreateEscalationPolicyHandler(polRepo, ids)
+	oncallQ := incidentquery.NewOnCallQueries(schedRepo, ovRepo)
+	oncallHandler := incidenthttp.NewOnCallHandler(createSched, createOv, createPol, oncallQ, _defaultWorkspaceID)
+
+	deps := incidentDeps{handler: handler, oncallHandler: oncallHandler}
+	if sendH != nil {
+		deps.escalation = incidentcommand.NewEscalationService(
+			repo, polRepo, schedRepo, ovRepo, stateRepo, stateRepo,
+			escalationNotifier{send: sendH}, clock)
+	}
+
 	bus.Subscribe(slodomain.EventBudgetExhausted, budgetExhaustedToIncident(create))
-	return incidentDeps{handler: handler}
+	return deps
+}
+
+// escalationNotifier adapt notification SendHandler sang ports.EscalationNotifier
+// (giao escalation qua Notification Hub, event type incident_escalated).
+type escalationNotifier struct{ send *notify.SendHandler }
+
+var _ incidentports.EscalationNotifier = escalationNotifier{}
+
+func (n escalationNotifier) Notify(ctx context.Context, notice incidentports.EscalationNotice) error {
+	return n.send.Handle(ctx, notify.SendInput{
+		WorkspaceID: notice.WorkspaceID,
+		EventType:   notifdomain.EventIncidentEscalated,
+		EventRef:    notice.IncidentID,
+		Data: map[string]string{
+			"title":     notice.Title,
+			"service":   notice.Service,
+			"severity":  notice.Severity,
+			"target":    notice.Target,
+			"recipient": notice.Recipient,
+			"level":     strconv.Itoa(notice.Level),
+		},
+		DedupKey: fmt.Sprintf("escalation-%s-%d", notice.IncidentID, notice.Level),
+	})
+}
+
+// runEscalation quét escalation định kỳ (stop qua ctx) — escalate incident chưa
+// ack tới bậc kế khi quá timeout (doc_v2/06 §1.4).
+func runEscalation(ctx context.Context, svc *incidentcommand.EscalationService, log *logger.Logger) {
+	ticker := time.NewTicker(_escalationSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			res, err := svc.Sweep(ctx)
+			if err != nil {
+				log.Error(ctx, err, "escalation sweep")
+				continue
+			}
+			if res.Escalated > 0 {
+				log.Infof(ctx, "escalation sweep", "escalated", strconv.Itoa(res.Escalated))
+			}
+		}
+	}
 }
 
 // budgetExhaustedToIncident map outbox event BudgetExhausted → auto-create SEV2
@@ -551,7 +620,7 @@ func run() error {
 
 	// Incident BC (GĐ3.3): state machine + MTTA/MTTR. Subscribe BudgetExhausted
 	// → auto-create SEV2. Đăng ký TRƯỚC relay.Run để subscription sẵn sàng.
-	incident := buildIncident(pool, bus, mx.Registry())
+	incident := buildIncident(pool, bus, mx.Registry(), notif.send)
 	// Đóng vòng incident → notification: IncidentCreated/Resolved phát ra outbox,
 	// relay dispatch → send qua kênh đã đăng ký (chỉ khi delivery bật).
 	if notif.send != nil {
@@ -562,6 +631,9 @@ func run() error {
 	relay := outbox.NewRelay(outbox.NewStore(pool), bus.Dispatch)
 	go relay.Run(ctx)
 	go slo.snapshotJob.Run(ctx) // budget snapshot định kỳ (stop qua ctx)
+	if incident.escalation != nil {
+		go runEscalation(ctx, incident.escalation, log) // escalation sweep định kỳ
+	}
 	if notif.worker != nil {
 		if err := notif.queue.EnsureGroup(ctx); err != nil {
 			return fmt.Errorf("ensure delivery group: %w", err)
@@ -683,6 +755,7 @@ func buildRouter(
 	slo.handler.Register(api, auth.RequireAuth(jwtSvc))
 	notif.handler.Register(api, auth.RequireAuth(jwtSvc))
 	incident.handler.Register(api, auth.RequireAuth(jwtSvc))
+	incident.oncallHandler.Register(api, auth.RequireAuth(jwtSvc))
 	if logHandler != nil {
 		logHandler.Register(api, auth.RequireAuth(jwtSvc))
 	}

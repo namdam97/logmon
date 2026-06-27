@@ -33,7 +33,15 @@ type IncidentRepository struct {
 var (
 	_ ports.IncidentRepository = (*IncidentRepository)(nil)
 	_ ports.IncidentReader     = (*IncidentRepository)(nil)
+	_ ports.UnackedReader      = (*IncidentRepository)(nil)
 )
+
+// _unackedStatuses là incident active nhưng CHƯA được ack (chưa Assigned) — đầu
+// vào escalation runner.
+var _unackedStatuses = []string{
+	domain.StatusOpen.String(),
+	domain.StatusTriaged.String(),
+}
 
 // NewIncidentRepository tạo repository với pool.
 func NewIncidentRepository(pool *pgxpool.Pool) *IncidentRepository {
@@ -110,6 +118,14 @@ func (r *IncidentRepository) ActiveBySourceRef(ctx context.Context, workspaceID 
 		return domain.Incident{}, domain.ErrIncidentNotFound
 	}
 	return inc, err
+}
+
+// ListUnacked đọc incident chưa ack (status open/triaged) trên mọi workspace —
+// escalation runner quét toàn cục (cũ nhất trước để escalate đúng thứ tự).
+func (r *IncidentRepository) ListUnacked(ctx context.Context) ([]domain.Incident, error) {
+	const q = `SELECT ` + incidentColumns + ` FROM incidents
+		WHERE status = ANY($1) ORDER BY created_at ASC`
+	return r.queryIncidents(ctx, q, _unackedStatuses)
 }
 
 func (r *IncidentRepository) queryIncidents(ctx context.Context, q string, args ...any) ([]domain.Incident, error) {

@@ -32,6 +32,10 @@ var _templates = map[string]struct{ subject, body string }{
 		subject: "✅ Sự cố đã đóng: {{.title}}",
 		body:    "Sự cố {{.title}} đã được giải quyết. MTTR: {{.mttr}}.",
 	},
+	domain.EventIncidentEscalated: {
+		subject: "📟 Escalation [{{.target}}] sự cố: {{.title}}",
+		body:    "Sự cố {{.title}} (service {{.service}}, {{.severity}}) chưa được ack.\nEscalate tới {{.target}}: {{.recipient}} (bậc {{.level}}).",
+	},
 	domain.EventSLOBudgetWarning: {
 		subject: "⚠️ Error budget thấp: SLO {{.sloName}}",
 		body:    "SLO {{.sloName}} (service {{.service}}) còn {{.budgetRemaining}} error budget.\nMục tiêu: {{.target}}. Hãy xem xét trước khi cạn ngân sách.",

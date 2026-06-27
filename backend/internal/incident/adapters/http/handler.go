@@ -293,6 +293,10 @@ func failDomain(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, domain.ErrIncidentNotFound):
 		httpx.Fail(c, http.StatusNotFound, "incident not found")
+	case errors.Is(err, domain.ErrScheduleNotFound):
+		httpx.Fail(c, http.StatusNotFound, "on-call schedule not found")
+	case errors.Is(err, domain.ErrEscalationPolicyNotFound):
+		httpx.Fail(c, http.StatusNotFound, "escalation policy not found")
 	case errors.Is(err, domain.ErrInvalidTransition):
 		httpx.Fail(c, http.StatusConflict, err.Error())
 	default:
