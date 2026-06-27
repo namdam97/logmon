@@ -7,6 +7,9 @@
 coverage.out
 coverage.html
 vendor/
+# Vendored drawio-ai-kit has its own vendor/ (runtime aiicons.py) — keep it tracked.
+!tools/drawio-ai-kit/vendor/
+!tools/drawio-ai-kit/vendor/**
 
 # Env / secrets
 .env
