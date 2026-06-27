@@ -177,7 +177,7 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 	inc, err := h.creator.Handle(c.Request.Context(), command.CreateIncidentInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		Title:       req.Title,
 		Description: req.Description,
 		Service:     req.Service,
@@ -199,9 +199,9 @@ func (h *Handler) list(c *gin.Context) {
 		err       error
 	)
 	if c.Query("active") == "true" {
-		incidents, err = h.queries.ListActive(ctx, h.workspaceID)
+		incidents, err = h.queries.ListActive(ctx, h.wsID(c))
 	} else {
-		incidents, err = h.queries.List(ctx, h.workspaceID)
+		incidents, err = h.queries.List(ctx, h.wsID(c))
 	}
 	if err != nil {
 		failDomain(c, err)
@@ -215,7 +215,7 @@ func (h *Handler) list(c *gin.Context) {
 }
 
 func (h *Handler) get(c *gin.Context) {
-	inc, err := h.queries.Get(c.Request.Context(), h.workspaceID, c.Param("id"))
+	inc, err := h.queries.Get(c.Request.Context(), h.wsID(c), c.Param("id"))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -224,7 +224,7 @@ func (h *Handler) get(c *gin.Context) {
 }
 
 func (h *Handler) timeline(c *gin.Context) {
-	entries, err := h.queries.Timeline(c.Request.Context(), h.workspaceID, c.Param("id"))
+	entries, err := h.queries.Timeline(c.Request.Context(), h.wsID(c), c.Param("id"))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -242,7 +242,7 @@ func (h *Handler) triage(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	inc, err := h.transitions.Triage(c.Request.Context(), h.workspaceID, c.Param("id"), req.Severity, req.Description, actorFrom(c))
+	inc, err := h.transitions.Triage(c.Request.Context(), h.wsID(c), c.Param("id"), req.Severity, req.Description, actorFrom(c))
 	respond(c, inc, err)
 }
 
@@ -252,31 +252,31 @@ func (h *Handler) assign(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	inc, err := h.transitions.Assign(c.Request.Context(), h.workspaceID, c.Param("id"), req.Assignee, actorFrom(c))
+	inc, err := h.transitions.Assign(c.Request.Context(), h.wsID(c), c.Param("id"), req.Assignee, actorFrom(c))
 	respond(c, inc, err)
 }
 
 func (h *Handler) mitigate(c *gin.Context) {
-	inc, err := h.transitions.StartMitigation(c.Request.Context(), h.workspaceID, c.Param("id"), actorFrom(c))
+	inc, err := h.transitions.StartMitigation(c.Request.Context(), h.wsID(c), c.Param("id"), actorFrom(c))
 	respond(c, inc, err)
 }
 
 func (h *Handler) resolve(c *gin.Context) {
 	var req noteRequest
 	_ = c.ShouldBindJSON(&req) // note tùy chọn
-	inc, err := h.transitions.Resolve(c.Request.Context(), h.workspaceID, c.Param("id"), req.Note, actorFrom(c))
+	inc, err := h.transitions.Resolve(c.Request.Context(), h.wsID(c), c.Param("id"), req.Note, actorFrom(c))
 	respond(c, inc, err)
 }
 
 func (h *Handler) postmortem(c *gin.Context) {
-	inc, err := h.transitions.RequirePostmortem(c.Request.Context(), h.workspaceID, c.Param("id"), actorFrom(c))
+	inc, err := h.transitions.RequirePostmortem(c.Request.Context(), h.wsID(c), c.Param("id"), actorFrom(c))
 	respond(c, inc, err)
 }
 
 func (h *Handler) close(c *gin.Context) {
 	var req noteRequest
 	_ = c.ShouldBindJSON(&req) // note tùy chọn
-	inc, err := h.transitions.Close(c.Request.Context(), h.workspaceID, c.Param("id"), req.Note, actorFrom(c))
+	inc, err := h.transitions.Close(c.Request.Context(), h.wsID(c), c.Param("id"), req.Note, actorFrom(c))
 	respond(c, inc, err)
 }
 
@@ -313,4 +313,13 @@ func failDomain(c *gin.Context, err error) {
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
 	}
+}
+
+// wsID lấy workspace từ context (đã qua RequireAuthWorkspace); fallback sang
+// workspace mặc định khi không có context (webhook machine-auth / test).
+func (h *Handler) wsID(c *gin.Context) string {
+	if ws, ok := auth.WorkspaceIDFromContext(c); ok {
+		return ws
+	}
+	return h.workspaceID
 }

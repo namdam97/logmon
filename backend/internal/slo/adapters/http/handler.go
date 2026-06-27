@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/httpx"
 	"github.com/namdam97/logmon/backend/internal/slo/app/command"
 	"github.com/namdam97/logmon/backend/internal/slo/app/query"
@@ -105,7 +106,7 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 	slo, err := h.creator.Handle(c.Request.Context(), command.CreateSLOInput{
-		WorkspaceID:        h.workspaceID,
+		WorkspaceID:        h.wsID(c),
 		Name:               req.Name,
 		Service:            req.Service,
 		SLIType:            req.SLIType,
@@ -121,7 +122,7 @@ func (h *Handler) create(c *gin.Context) {
 }
 
 func (h *Handler) list(c *gin.Context) {
-	slos, err := h.queries.List(c.Request.Context(), h.workspaceID)
+	slos, err := h.queries.List(c.Request.Context(), h.wsID(c))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -134,7 +135,7 @@ func (h *Handler) list(c *gin.Context) {
 }
 
 func (h *Handler) get(c *gin.Context) {
-	slo, err := h.queries.Get(c.Request.Context(), h.workspaceID, c.Param("id"))
+	slo, err := h.queries.Get(c.Request.Context(), h.wsID(c), c.Param("id"))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -149,7 +150,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 	slo, err := h.updater.Handle(c.Request.Context(), command.UpdateSLOInput{
-		WorkspaceID:        h.workspaceID,
+		WorkspaceID:        h.wsID(c),
 		ID:                 c.Param("id"),
 		Name:               req.Name,
 		Service:            req.Service,
@@ -166,7 +167,7 @@ func (h *Handler) update(c *gin.Context) {
 }
 
 func (h *Handler) delete(c *gin.Context) {
-	if err := h.deleter.Handle(c.Request.Context(), h.workspaceID, c.Param("id")); err != nil {
+	if err := h.deleter.Handle(c.Request.Context(), h.wsID(c), c.Param("id")); err != nil {
 		failDomain(c, err)
 		return
 	}
@@ -204,7 +205,7 @@ func toBudget(v query.BudgetView) budgetResponse {
 }
 
 func (h *Handler) budget(c *gin.Context) {
-	v, err := h.queries.Budget(c.Request.Context(), h.workspaceID, c.Param("id"))
+	v, err := h.queries.Budget(c.Request.Context(), h.wsID(c), c.Param("id"))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -218,7 +219,7 @@ type complianceRow struct {
 }
 
 func (h *Handler) compliance(c *gin.Context) {
-	views, err := h.queries.Compliance(c.Request.Context(), h.workspaceID)
+	views, err := h.queries.Compliance(c.Request.Context(), h.wsID(c))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -245,4 +246,13 @@ func failDomain(c *gin.Context, err error) {
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
 	}
+}
+
+// wsID lấy workspace từ context (đã qua RequireAuthWorkspace); fallback sang
+// workspace mặc định khi không có context (webhook machine-auth / test).
+func (h *Handler) wsID(c *gin.Context) string {
+	if ws, ok := auth.WorkspaceIDFromContext(c); ok {
+		return ws
+	}
+	return h.workspaceID
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/namdam97/logmon/backend/internal/notification/app/command"
 	"github.com/namdam97/logmon/backend/internal/notification/domain"
+	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/httpx"
 )
 
@@ -116,7 +117,7 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 	ch, err := h.creator.Handle(c.Request.Context(), command.CreateChannelInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		Name:        req.Name,
 		ChannelType: req.ChannelType,
 		Config:      req.Config,
@@ -130,7 +131,7 @@ func (h *Handler) create(c *gin.Context) {
 }
 
 func (h *Handler) list(c *gin.Context) {
-	channels, err := h.reader.List(c.Request.Context(), h.workspaceID)
+	channels, err := h.reader.List(c.Request.Context(), h.wsID(c))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -148,7 +149,7 @@ func (h *Handler) get(c *gin.Context) {
 		failDomain(c, err)
 		return
 	}
-	ch, err := h.reader.ByID(c.Request.Context(), h.workspaceID, id)
+	ch, err := h.reader.ByID(c.Request.Context(), h.wsID(c), id)
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -163,7 +164,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 	ch, err := h.updater.Handle(c.Request.Context(), command.UpdateChannelInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		ID:          c.Param("id"),
 		Name:        req.Name,
 		ChannelType: req.ChannelType,
@@ -179,7 +180,7 @@ func (h *Handler) update(c *gin.Context) {
 }
 
 func (h *Handler) delete(c *gin.Context) {
-	if err := h.deleter.Handle(c.Request.Context(), h.workspaceID, c.Param("id")); err != nil {
+	if err := h.deleter.Handle(c.Request.Context(), h.wsID(c), c.Param("id")); err != nil {
 		failDomain(c, err)
 		return
 	}
@@ -187,7 +188,7 @@ func (h *Handler) delete(c *gin.Context) {
 }
 
 func (h *Handler) test(c *gin.Context) {
-	err := h.tester.Handle(c.Request.Context(), h.workspaceID, c.Param("id"))
+	err := h.tester.Handle(c.Request.Context(), h.wsID(c), c.Param("id"))
 	if err != nil {
 		if errors.Is(err, domain.ErrChannelNotFound) {
 			httpx.Fail(c, http.StatusNotFound, "channel not found")
@@ -216,7 +217,7 @@ type historyResponse struct {
 }
 
 func (h *Handler) listHistory(c *gin.Context) {
-	entries, err := h.history.List(c.Request.Context(), h.workspaceID, 0)
+	entries, err := h.history.List(c.Request.Context(), h.wsID(c), 0)
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -251,4 +252,13 @@ func failDomain(c *gin.Context, err error) {
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
 	}
+}
+
+// wsID lấy workspace từ context (đã qua RequireAuthWorkspace); fallback sang
+// workspace mặc định khi không có context (webhook machine-auth / test).
+func (h *Handler) wsID(c *gin.Context) string {
+	if ws, ok := auth.WorkspaceIDFromContext(c); ok {
+		return ws
+	}
+	return h.workspaceID
 }

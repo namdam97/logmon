@@ -9,6 +9,7 @@ import (
 
 	"github.com/namdam97/logmon/backend/internal/incident/app/command"
 	"github.com/namdam97/logmon/backend/internal/incident/domain"
+	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/httpx"
 )
 
@@ -157,7 +158,7 @@ func (h *PostmortemHandler) submit(c *gin.Context) {
 		return
 	}
 	pm, err := h.handler.Submit(c.Request.Context(), command.SubmitPostmortemInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		IncidentID:  c.Param("id"),
 		RootCause:   req.RootCause,
 		Impact: domain.Impact{
@@ -177,7 +178,7 @@ func (h *PostmortemHandler) submit(c *gin.Context) {
 }
 
 func (h *PostmortemHandler) get(c *gin.Context) {
-	pm, items, err := h.queries.GetByIncident(c.Request.Context(), h.workspaceID, c.Param("id"))
+	pm, items, err := h.queries.GetByIncident(c.Request.Context(), h.wsID(c), c.Param("id"))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -190,7 +191,7 @@ func (h *PostmortemHandler) get(c *gin.Context) {
 }
 
 func (h *PostmortemHandler) publish(c *gin.Context) {
-	pm, err := h.handler.Publish(c.Request.Context(), h.workspaceID, c.Param("id"))
+	pm, err := h.handler.Publish(c.Request.Context(), h.wsID(c), c.Param("id"))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -215,7 +216,7 @@ func (h *PostmortemHandler) addActionItem(c *gin.Context) {
 		due = &utc
 	}
 	item, err := h.handler.AddActionItem(c.Request.Context(), command.AddActionItemInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		IncidentID:  c.Param("id"),
 		Title:       req.Title,
 		Assignee:    req.Assignee,
@@ -234,10 +235,19 @@ func (h *PostmortemHandler) updateActionItem(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	item, err := h.handler.UpdateActionItemStatus(c.Request.Context(), h.workspaceID, c.Param("id"), c.Param("itemId"), req.Status)
+	item, err := h.handler.UpdateActionItemStatus(c.Request.Context(), h.wsID(c), c.Param("id"), c.Param("itemId"), req.Status)
 	if err != nil {
 		failDomain(c, err)
 		return
 	}
 	httpx.OK(c, http.StatusOK, toActionItem(item))
+}
+
+// wsID lấy workspace từ context (đã qua RequireAuthWorkspace); fallback sang
+// workspace mặc định khi không có context (webhook machine-auth / test).
+func (h *PostmortemHandler) wsID(c *gin.Context) string {
+	if ws, ok := auth.WorkspaceIDFromContext(c); ok {
+		return ws
+	}
+	return h.workspaceID
 }

@@ -49,32 +49,57 @@ type MembershipResolver interface {
 	Resolve(ctx context.Context, userID, workspaceID string) (role string, ok bool, err error)
 }
 
+// resolveWorkspace validate membership của user (đã xác thực) cho wsID, gắn
+// workspaceID + role vào context. Trả false + abort nếu thiếu/không phải thành
+// viên/lỗi. Tách riêng để compose (không gọi c.Next()).
+func resolveWorkspace(c *gin.Context, resolver MembershipResolver, wsID string) bool {
+	userID, ok := UserIDFromContext(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "unauthorized"})
+		return false
+	}
+	wsID = strings.TrimSpace(wsID)
+	if wsID == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"success": false, "error": "workspace required"})
+		return false
+	}
+	role, ok, err := resolver.Resolve(c.Request.Context(), userID, wsID)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"success": false, "error": "internal server error"})
+		return false
+	}
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"success": false, "error": "not found"})
+		return false
+	}
+	c.Set(contextWorkspaceIDKey, wsID)
+	c.Set(contextRoleKey, role)
+	return true
+}
+
 // RequireWorkspace validate header X-Workspace-ID + membership của user (đã qua
 // RequireAuth). Gắn workspaceID + role vào context cho handler/RBAC dùng. Resource
 // khác workspace hoặc không phải thành viên → 404 (không lộ tồn tại — doc_v2/09).
 func RequireWorkspace(resolver MembershipResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID, ok := UserIDFromContext(c)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "unauthorized"})
+		if !resolveWorkspace(c, resolver, c.GetHeader(WorkspaceHeader)) {
 			return
 		}
-		wsID := strings.TrimSpace(c.GetHeader(WorkspaceHeader))
-		if wsID == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"success": false, "error": "workspace required"})
+		c.Next()
+	}
+}
+
+// RequireAuthWorkspace compose RequireAuth + RequireWorkspace (header-based) trong
+// một middleware để truyền vào vị trí authMW của các handler tenant-scoped mà
+// KHÔNG phải đổi signature Register. Thứ tự: xác thực → resolve workspace → Next.
+func RequireAuthWorkspace(parser TokenParser, resolver MembershipResolver) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !authenticate(c, parser) {
 			return
 		}
-		role, ok, err := resolver.Resolve(c.Request.Context(), userID, wsID)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"success": false, "error": "internal server error"})
+		if !resolveWorkspace(c, resolver, c.GetHeader(WorkspaceHeader)) {
 			return
 		}
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"success": false, "error": "not found"})
-			return
-		}
-		c.Set(contextWorkspaceIDKey, wsID)
-		c.Set(contextRoleKey, role)
 		c.Next()
 	}
 }
@@ -84,27 +109,9 @@ func RequireWorkspace(resolver MembershipResolver) gin.HandlerFunc {
 // trên một workspace cụ thể. Validate membership + gắn role vào context.
 func RequireWorkspaceParam(resolver MembershipResolver, param string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID, ok := UserIDFromContext(c)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "unauthorized"})
+		if !resolveWorkspace(c, resolver, c.Param(param)) {
 			return
 		}
-		wsID := strings.TrimSpace(c.Param(param))
-		if wsID == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"success": false, "error": "workspace required"})
-			return
-		}
-		role, ok, err := resolver.Resolve(c.Request.Context(), userID, wsID)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"success": false, "error": "internal server error"})
-			return
-		}
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"success": false, "error": "not found"})
-			return
-		}
-		c.Set(contextWorkspaceIDKey, wsID)
-		c.Set(contextRoleKey, role)
 		c.Next()
 	}
 }

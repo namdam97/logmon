@@ -89,7 +89,7 @@ func (h *InstanceHandler) webhook(c *gin.Context) {
 	}
 
 	res, err := h.ingester.Handle(c.Request.Context(), command.IngestWebhookInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		Alerts:      alerts,
 	})
 	if err != nil {
@@ -111,7 +111,7 @@ func (h *InstanceHandler) acknowledge(c *gin.Context) {
 		return
 	}
 	inst, err := h.acknowledger.Handle(c.Request.Context(), command.AcknowledgeInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		InstanceID:  c.Param("id"),
 		AckedBy:     userID,
 	})
@@ -140,7 +140,7 @@ func failInstance(c *gin.Context, err error) {
 }
 
 func (h *InstanceHandler) listActive(c *gin.Context) {
-	instances, err := h.reader.ListActive(c.Request.Context(), h.workspaceID)
+	instances, err := h.reader.ListActive(c.Request.Context(), h.wsID(c))
 	if err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
 		return
@@ -182,4 +182,13 @@ func formatTime(t time.Time) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+// wsID lấy workspace từ context (đã qua RequireAuthWorkspace); fallback sang
+// workspace mặc định khi không có context (webhook machine-auth / test).
+func (h *InstanceHandler) wsID(c *gin.Context) string {
+	if ws, ok := auth.WorkspaceIDFromContext(c); ok {
+		return ws
+	}
+	return h.workspaceID
 }

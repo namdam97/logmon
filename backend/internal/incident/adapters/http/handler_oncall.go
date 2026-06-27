@@ -9,6 +9,7 @@ import (
 
 	"github.com/namdam97/logmon/backend/internal/incident/app/command"
 	"github.com/namdam97/logmon/backend/internal/incident/domain"
+	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/httpx"
 )
 
@@ -165,7 +166,7 @@ func (h *OnCallHandler) createSchedule(c *gin.Context) {
 		return
 	}
 	s, err := h.schedules.Handle(c.Request.Context(), command.CreateScheduleInput{
-		WorkspaceID:  h.workspaceID,
+		WorkspaceID:  h.wsID(c),
 		Name:         req.Name,
 		Rotation:     req.Rotation,
 		Participants: req.Participants,
@@ -182,7 +183,7 @@ func (h *OnCallHandler) createSchedule(c *gin.Context) {
 }
 
 func (h *OnCallHandler) listSchedules(c *gin.Context) {
-	list, err := h.queries.ListSchedules(c.Request.Context(), h.workspaceID)
+	list, err := h.queries.ListSchedules(c.Request.Context(), h.wsID(c))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -204,7 +205,7 @@ func (h *OnCallHandler) current(c *gin.Context) {
 		}
 		at = parsed.UTC()
 	}
-	_, oncall, err := h.queries.Current(c.Request.Context(), h.workspaceID, c.Param("id"), at)
+	_, oncall, err := h.queries.Current(c.Request.Context(), h.wsID(c), c.Param("id"), at)
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -260,7 +261,7 @@ func (h *OnCallHandler) createPolicy(c *gin.Context) {
 		levels = append(levels, command.EscalationLevelInput{Target: lv.Target, TimeoutMinutes: lv.TimeoutMinutes})
 	}
 	p, err := h.policies.Handle(c.Request.Context(), command.CreateEscalationPolicyInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		Name:        req.Name,
 		TeamLead:    req.TeamLead,
 		Levels:      levels,
@@ -278,4 +279,13 @@ func parseDate(raw string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse("2006-01-02", raw)
+}
+
+// wsID lấy workspace từ context (đã qua RequireAuthWorkspace); fallback sang
+// workspace mặc định khi không có context (webhook machine-auth / test).
+func (h *OnCallHandler) wsID(c *gin.Context) string {
+	if ws, ok := auth.WorkspaceIDFromContext(c); ok {
+		return ws
+	}
+	return h.workspaceID
 }

@@ -54,6 +54,7 @@ import (
 	"github.com/namdam97/logmon/backend/internal/notification/app/notify"
 	notifworker "github.com/namdam97/logmon/backend/internal/notification/app/worker"
 	notifdomain "github.com/namdam97/logmon/backend/internal/notification/domain"
+	"github.com/namdam97/logmon/backend/internal/shared/audit"
 	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/crypto"
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
@@ -788,16 +789,33 @@ func buildRouter(
 	})
 	authRate := middleware.NewPerMinuteLimiter(authRatePerMin, authRateBurst)
 	handler.Register(api, auth.RequireAuth(jwtSvc), authRate.Middleware())
-	alerting.handler.Register(api, auth.RequireAuth(jwtSvc))
-	alerting.instanceHandler.Register(api, auth.RequireAuth(jwtSvc), auth.RequireBearerToken(webhookToken))
-	alerting.silenceHandler.Register(api, auth.RequireAuth(jwtSvc))
-	slo.handler.Register(api, auth.RequireAuth(jwtSvc))
-	notif.handler.Register(api, auth.RequireAuth(jwtSvc))
-	incident.handler.Register(api, auth.RequireAuth(jwtSvc))
-	incident.oncallHandler.Register(api, auth.RequireAuth(jwtSvc))
-	incident.postmortemHandler.Register(api, auth.RequireAuth(jwtSvc))
+
+	// Identity multi-tenancy (GĐ3.6): workspace + member + RBAC. Stateless ids/clock
+	// dựng tại chỗ từ pool. resolver được dùng cho cả route quản lý workspace lẫn
+	// middleware tenant của các BC khác.
+	wsRepo := userpg.NewWorkspaceRepository(pool)
+	memRepo := userpg.NewMembershipRepository(pool)
+	wsSvc := userapp.NewWorkspaceService(wsRepo, wsRepo, memRepo, usersys.NewUUIDGenerator(), usersys.NewClock())
+	memSvc := userapp.NewMemberService(memRepo, memRepo, userpg.NewRepository(pool), usersys.NewClock())
+	resolver := userapp.NewMembershipResolver(memRepo)
+	auditor := audit.NewPostgresRecorder(pool)
+	userhttp.NewWorkspaceHandler(wsSvc, memSvc, resolver, auditor).Register(api, auth.RequireAuth(jwtSvc))
+
+	// tenantMW = xác thực + validate membership từ header X-Workspace-ID, gắn
+	// workspace+role vào context. Mọi BC tenant-scoped dùng làm authMW (isolation).
+	tenantMW := auth.RequireAuthWorkspace(jwtSvc, resolver)
+	alerting.handler.Register(api, tenantMW)
+	// instanceHandler: route người dùng (ack/list) → tenantMW; webhook ingest dùng
+	// bearer token (machine-auth, không có header workspace → wsID fallback default).
+	alerting.instanceHandler.Register(api, tenantMW, auth.RequireBearerToken(webhookToken))
+	alerting.silenceHandler.Register(api, tenantMW)
+	slo.handler.Register(api, tenantMW)
+	notif.handler.Register(api, tenantMW)
+	incident.handler.Register(api, tenantMW)
+	incident.oncallHandler.Register(api, tenantMW)
+	incident.postmortemHandler.Register(api, tenantMW)
 	if logHandler != nil {
-		logHandler.Register(api, auth.RequireAuth(jwtSvc))
+		logHandler.Register(api, tenantMW)
 	}
 	return r
 }
