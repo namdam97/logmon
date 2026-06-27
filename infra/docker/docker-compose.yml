@@ -21,6 +21,22 @@ services:
       timeout: 3s
       retries: 5
 
+  # Redis: delivery queue cho notification BC (GĐ3.2, Redis Streams + consumer
+  # group). Stack nhẹ vì notification là phần lõi GĐ3; rỗng REDIS_ADDR → worker tắt.
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # Schema migrations qua golang-migrate (ADR: thay initdb để lặp lại được).
   # Chạy one-shot khi `up`, idempotent (track schema_migrations). Cũng dùng
   # cho `make migrate` / `make migrate-down`.
@@ -90,12 +106,21 @@ services:
       ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
       ELASTICSEARCH_USERNAME: elastic
       ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+      # Notification delivery (GĐ3.2): Redis Streams queue. Rỗng → worker tắt.
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # Mã hóa config kênh at-rest (AES-GCM). Rỗng → derive từ JWT_SECRET (HMAC).
+      # Production PHẢI set NOTIFICATION_ENCRYPTION_KEY (secret manager).
+      NOTIFICATION_ENCRYPTION_KEY: ${NOTIFICATION_ENCRYPTION_KEY:-}
+      NOTIFICATION_KEY_ID: ${NOTIFICATION_KEY_ID:-v1}
     volumes:
       - genrules:/etc/prometheus/generated
     ports:
       - "8080:8080"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -385,6 +410,7 @@ services:
 
 volumes:
   pgdata:
+  redisdata:  # delivery queue persistence cho notification BC (GĐ3.2)
   genrules:   # rule file alerting BC render → Prometheus đọc (rule sync pipeline)
   promdata:
   grafanadata:

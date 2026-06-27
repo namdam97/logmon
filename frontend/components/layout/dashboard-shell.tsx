@@ -2,15 +2,32 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, Bell, Gauge, LogOut, User } from "lucide-react";
+import {
+  Activity,
+  Bell,
+  Gauge,
+  LogOut,
+  Radio,
+  Send,
+  ShieldAlert,
+  Target,
+  User,
+  Workflow,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { logout as apiLogout } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 
 const NAV = [
   { href: "/", label: "Tổng quan", icon: Gauge },
+  { href: "/slos", label: "SLO", icon: Target },
+  { href: "/incidents", label: "Sự cố", icon: ShieldAlert },
   { href: "/alerts", label: "Cảnh báo", icon: Bell },
+  { href: "/oncall", label: "Trực ca", icon: Radio },
+  { href: "/channels", label: "Kênh báo", icon: Send },
+  { href: "/pipeline", label: "Pipeline", icon: Workflow },
   { href: "/profile", label: "Hồ sơ", icon: User },
 ];
 
@@ -60,9 +77,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex flex-1 flex-col">
         <header className="flex h-14 items-center justify-between border-b px-6">
-          <span className="text-sm text-muted-foreground">
-            Observability Admin
-          </span>
+          <WorkspaceSwitcher />
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="icon" aria-label="Thông báo">
               <Bell className="h-4 w-4" />

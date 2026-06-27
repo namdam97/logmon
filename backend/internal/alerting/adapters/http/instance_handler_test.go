@@ -50,7 +50,11 @@ const ackActor = "22222222-2222-2222-2222-222222222222"
 func noopMW(c *gin.Context) { c.Next() }
 
 // authStubMW giả lập RequireAuth: gắn userID đã xác thực vào context.
-func authStubMW(c *gin.Context) { c.Set("auth_user_id", ackActor); c.Next() }
+func authStubMW(c *gin.Context) {
+	c.Set("auth_user_id", ackActor)
+	c.Set("auth_role", "admin")
+	c.Next()
+}
 
 func newInstanceEngine(ing *fakeIngester, ack *fakeAcknowledger, reader *fakeInstanceReader) *gin.Engine {
 	gin.SetMode(gin.TestMode)

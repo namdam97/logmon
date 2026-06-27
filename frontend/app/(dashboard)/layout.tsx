@@ -2,6 +2,7 @@
 
 import { AuthGuard } from "@/components/auth-guard";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
+import { WorkspaceProvider } from "@/components/workspace-provider";
 
 export default function DashboardLayout({
   children,
@@ -9,6 +10,12 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <AuthGuard>{() => <DashboardShell>{children}</DashboardShell>}</AuthGuard>
+    <AuthGuard>
+      {() => (
+        <WorkspaceProvider>
+          <DashboardShell>{children}</DashboardShell>
+        </WorkspaceProvider>
+      )}
+    </AuthGuard>
   );
 }

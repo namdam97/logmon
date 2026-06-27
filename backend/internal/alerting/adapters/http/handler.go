@@ -14,6 +14,7 @@ import (
 
 	"github.com/namdam97/logmon/backend/internal/alerting/app/command"
 	"github.com/namdam97/logmon/backend/internal/alerting/domain"
+	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/httpx"
 )
 
@@ -76,13 +77,14 @@ func NewHandler(
 
 // Register gắn routes alerting. authMW bảo vệ mọi route (yêu cầu đăng nhập).
 func (h *Handler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/alert-rules", authMW, h.create)
+	editor := auth.RequireRole(auth.RoleEditor)
+	rg.POST("/alert-rules", authMW, editor, h.create)
 	rg.GET("/alert-rules", authMW, h.list)
 	rg.GET("/alert-rules/:id", authMW, h.get)
-	rg.PUT("/alert-rules/:id", authMW, h.update)
-	rg.DELETE("/alert-rules/:id", authMW, h.delete)
-	rg.POST("/alert-rules/:id/enable", authMW, h.enable)
-	rg.POST("/alert-rules/:id/disable", authMW, h.disable)
+	rg.PUT("/alert-rules/:id", authMW, editor, h.update)
+	rg.DELETE("/alert-rules/:id", authMW, editor, h.delete)
+	rg.POST("/alert-rules/:id/enable", authMW, editor, h.enable)
+	rg.POST("/alert-rules/:id/disable", authMW, editor, h.disable)
 }
 
 type createRuleRequest struct {
@@ -146,7 +148,7 @@ func (h *Handler) create(c *gin.Context) {
 	}
 
 	rule, err := h.creator.Handle(c.Request.Context(), command.CreateRuleInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		Name:        req.Name,
 		Expression:  req.Expression,
 		Service:     req.Service,
@@ -172,7 +174,7 @@ func (h *Handler) get(c *gin.Context) {
 }
 
 func (h *Handler) list(c *gin.Context) {
-	rules, err := h.queries.List(c.Request.Context(), h.workspaceID)
+	rules, err := h.queries.List(c.Request.Context(), h.wsID(c))
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -201,7 +203,7 @@ func (h *Handler) update(c *gin.Context) {
 	}
 
 	rule, err := h.updater.Handle(c.Request.Context(), command.UpdateRuleInput{
-		WorkspaceID: h.workspaceID,
+		WorkspaceID: h.wsID(c),
 		ID:          c.Param("id"),
 		Name:        req.Name,
 		Expression:  req.Expression,
@@ -219,7 +221,7 @@ func (h *Handler) update(c *gin.Context) {
 }
 
 func (h *Handler) delete(c *gin.Context) {
-	if err := h.deleter.Handle(c.Request.Context(), h.workspaceID, c.Param("id")); err != nil {
+	if err := h.deleter.Handle(c.Request.Context(), h.wsID(c), c.Param("id")); err != nil {
 		failDomain(c, err)
 		return
 	}
@@ -230,7 +232,7 @@ func (h *Handler) enable(c *gin.Context)  { h.setEnabled(c, true) }
 func (h *Handler) disable(c *gin.Context) { h.setEnabled(c, false) }
 
 func (h *Handler) setEnabled(c *gin.Context, enabled bool) {
-	rule, err := h.enabler.Handle(c.Request.Context(), h.workspaceID, c.Param("id"), enabled)
+	rule, err := h.enabler.Handle(c.Request.Context(), h.wsID(c), c.Param("id"), enabled)
 	if err != nil {
 		failDomain(c, err)
 		return
@@ -253,4 +255,13 @@ func failDomain(c *gin.Context, err error) {
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "internal server error")
 	}
+}
+
+// wsID lấy workspace từ context (đã qua RequireAuthWorkspace); fallback sang
+// workspace mặc định khi không có context (webhook machine-auth / test).
+func (h *Handler) wsID(c *gin.Context) string {
+	if ws, ok := auth.WorkspaceIDFromContext(c); ok {
+		return ws
+	}
+	return h.workspaceID
 }
