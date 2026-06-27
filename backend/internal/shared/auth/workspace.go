@@ -79,6 +79,36 @@ func RequireWorkspace(resolver MembershipResolver) gin.HandlerFunc {
 	}
 }
 
+// RequireWorkspaceParam giống RequireWorkspace nhưng lấy workspace từ path param
+// (vd /workspaces/:id/members) thay vì header — dùng cho route thao tác trực tiếp
+// trên một workspace cụ thể. Validate membership + gắn role vào context.
+func RequireWorkspaceParam(resolver MembershipResolver, param string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, ok := UserIDFromContext(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "unauthorized"})
+			return
+		}
+		wsID := strings.TrimSpace(c.Param(param))
+		if wsID == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"success": false, "error": "workspace required"})
+			return
+		}
+		role, ok, err := resolver.Resolve(c.Request.Context(), userID, wsID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"success": false, "error": "internal server error"})
+			return
+		}
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"success": false, "error": "not found"})
+			return
+		}
+		c.Set(contextWorkspaceIDKey, wsID)
+		c.Set(contextRoleKey, role)
+		c.Next()
+	}
+}
+
 // RequireRole chặn request nếu role trong context thấp hơn min (403). Phải đặt
 // SAU RequireWorkspace trong chuỗi middleware.
 func RequireRole(min string) gin.HandlerFunc {

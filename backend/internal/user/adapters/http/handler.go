@@ -257,6 +257,14 @@ func failDomain(c *gin.Context, err error) {
 		httpx.Fail(c, http.StatusConflict, "email already registered")
 	case errors.Is(err, domain.ErrInvalidCredentials):
 		httpx.Fail(c, http.StatusUnauthorized, "invalid credentials")
+	case errors.Is(err, domain.ErrWorkspaceNotFound), errors.Is(err, domain.ErrNotMember):
+		httpx.Fail(c, http.StatusNotFound, "not found")
+	case errors.Is(err, domain.ErrSlugTaken):
+		httpx.Fail(c, http.StatusConflict, "workspace slug already taken")
+	case errors.Is(err, domain.ErrMembershipExists):
+		httpx.Fail(c, http.StatusConflict, "already a member")
+	case errors.Is(err, domain.ErrLastAdmin):
+		httpx.Fail(c, http.StatusConflict, "cannot remove the last admin")
 	default:
 		var ve *domain.ValidationError
 		if errors.As(err, &ve) {
