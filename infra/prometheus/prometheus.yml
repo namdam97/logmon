@@ -19,10 +19,15 @@ scrape_configs:
 
   - job_name: logmon-services
     scrape_interval: 15s
+    # Gán target label `service` cho mỗi service — SLO BC (GĐ3.1) lọc metric theo
+    # service={...} trong recording/alerting rules. metric HTTP không tự mang label này.
     static_configs:
-      - targets:
-          - userservice:8080
-          - demo-order:8081
+      - targets: [userservice:8080]
+        labels:
+          service: userservice
+      - targets: [demo-order:8081]
+        labels:
+          service: demo-order
 
   - job_name: node
     scrape_interval: 60s

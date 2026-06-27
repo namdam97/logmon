@@ -96,7 +96,7 @@ func (s SLO) GenerateRuleGroup() RuleGroup {
 		labels["window"] = w
 		recording = append(recording, RecordingRule{
 			Record: _recordPrefix + w,
-			Expr:   s.sliErrorRatioExpr(w),
+			Expr:   s.ErrorRatioQuery(w),
 			Labels: labels,
 		})
 	}
@@ -125,10 +125,11 @@ func (s SLO) GenerateRuleGroup() RuleGroup {
 	}
 }
 
-// sliErrorRatioExpr trả về biểu thức tỉ lệ "bad" theo cửa sổ window.
+// ErrorRatioQuery trả về biểu thức PromQL tỉ lệ "bad" theo cửa sổ window — dùng
+// chung cho recording rule VÀ budget snapshot job (DRY, cùng định nghĩa SLI).
 //   - availability: 5xx / tổng request.
 //   - latency: 1 − (request ≤ threshold / tổng) = tỉ lệ chậm hơn threshold.
-func (s SLO) sliErrorRatioExpr(window string) string {
+func (s SLO) ErrorRatioQuery(window string) string {
 	svc := s.service
 	if s.sliType.IsLatency() {
 		le := strconv.FormatFloat(float64(s.latencyMs)/1000, 'g', -1, 64)

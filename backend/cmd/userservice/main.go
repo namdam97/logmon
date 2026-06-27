@@ -40,6 +40,15 @@ import (
 	"github.com/namdam97/logmon/backend/internal/shared/middleware"
 	"github.com/namdam97/logmon/backend/internal/shared/outbox"
 	"github.com/namdam97/logmon/backend/internal/shared/tracing"
+	slohttp "github.com/namdam97/logmon/backend/internal/slo/adapters/http"
+	slopg "github.com/namdam97/logmon/backend/internal/slo/adapters/postgres"
+	sloprom "github.com/namdam97/logmon/backend/internal/slo/adapters/prometheus"
+	slopromfile "github.com/namdam97/logmon/backend/internal/slo/adapters/promfile"
+	slosys "github.com/namdam97/logmon/backend/internal/slo/adapters/system"
+	slocommand "github.com/namdam97/logmon/backend/internal/slo/app/command"
+	sloquery "github.com/namdam97/logmon/backend/internal/slo/app/query"
+	slosnapshot "github.com/namdam97/logmon/backend/internal/slo/app/snapshot"
+	slodomain "github.com/namdam97/logmon/backend/internal/slo/domain"
 	userhttp "github.com/namdam97/logmon/backend/internal/user/adapters/http"
 	userpg "github.com/namdam97/logmon/backend/internal/user/adapters/postgres"
 	usersys "github.com/namdam97/logmon/backend/internal/user/adapters/system"
@@ -135,12 +144,13 @@ type alertingDeps struct {
 	handler         *alertinghttp.Handler
 	instanceHandler *alertinghttp.InstanceHandler
 	silenceHandler  *alertinghttp.SilenceHandler
-	relay           *outbox.Relay
 }
 
 // buildAlerting dựng alerting BC + rule-sync pipeline: rule CRUD ghi event vào
-// outbox; relay quét outbox và resync toàn bộ rule sang Prometheus qua bus.
-func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
+// outbox; relay (dùng chung) quét outbox và resync rule sang Prometheus qua bus.
+// bus được chia sẻ với các BC khác (SLO) — CHỈ một relay quét outbox để tránh
+// claim chéo event (SKIP LOCKED) làm handler BC kia bỏ lỡ event.
+func buildAlerting(pool *pgxpool.Pool, cfg config, bus *outbox.Bus) alertingDeps {
 	store := outbox.NewStore(pool)
 	repo := alertingpg.NewRuleRepository(pool)
 	txm := alertingpg.NewTxManager(pool)
@@ -169,7 +179,6 @@ func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 	deleteSilence := command.NewDeleteSilenceHandler(silenceGW)
 	silenceHandler := alertinghttp.NewSilenceHandler(createSilence, deleteSilence, query.NewSilenceQueries(silenceGW))
 
-	bus := outbox.NewBus()
 	resync := func(ctx context.Context, _ outbox.Event) error { return syncer.Sync(ctx) }
 	bus.Subscribe(alertingdomain.EventAlertRuleCreated, resync)
 	bus.Subscribe(alertingdomain.EventAlertRuleUpdated, resync)
@@ -179,8 +188,60 @@ func buildAlerting(pool *pgxpool.Pool, cfg config) alertingDeps {
 		handler:         handler,
 		instanceHandler: instanceHandler,
 		silenceHandler:  silenceHandler,
-		relay:           outbox.NewRelay(store, bus.Dispatch),
 	}
+}
+
+// sloDeps gom các thành phần slo BC dựng ở composition root.
+type sloDeps struct {
+	handler     *slohttp.Handler
+	snapshotJob *slosnapshot.Job
+}
+
+// buildSLO dựng slo BC (GĐ3.1): SLO CRUD ghi event vào outbox; relay dùng chung
+// resync recording + MWMB rules sang Prometheus (file riêng). Budget snapshot job
+// query Prometheus định kỳ ghi slo_snapshots + phát BudgetExhausted.
+func buildSLO(pool *pgxpool.Pool, cfg config, bus *outbox.Bus, log *logger.Logger) sloDeps {
+	store := outbox.NewStore(pool)
+	repo := slopg.NewSLORepository(pool)
+	snapRepo := slopg.NewSnapshotRepository(pool)
+	txm := slopg.NewTxManager(pool)
+	publisher := slopg.NewEventPublisher(pool, store)
+	clock := slosys.NewClock()
+	ids := slosys.NewUUIDGenerator()
+	syncer := slopromfile.NewSyncer(repo, repo, clock, cfg.rulesDir, cfg.promURL)
+
+	createSLO := slocommand.NewCreateSLOHandler(txm, repo, publisher, ids, clock)
+	updateSLO := slocommand.NewUpdateSLOHandler(txm, repo, repo, publisher, clock)
+	deleteSLO := slocommand.NewDeleteSLOHandler(txm, repo, repo, publisher)
+	queries := sloquery.NewSLOQueries(repo, snapRepo)
+	handler := slohttp.NewHandler(createSLO, updateSLO, deleteSLO, queries, _defaultWorkspaceID)
+
+	resync := func(ctx context.Context, _ outbox.Event) error { return syncer.Sync(ctx) }
+	bus.Subscribe(slodomain.EventSLODefined, resync)
+	bus.Subscribe(slodomain.EventSLOUpdated, resync)
+	bus.Subscribe(slodomain.EventSLODeleted, resync)
+
+	querier := sloprom.NewClient(cfg.promURL)
+	job := slosnapshot.NewJob(repo, querier, snapRepo, txm, publisher, clock, sloLog{log})
+
+	return sloDeps{handler: handler, snapshotJob: job}
+}
+
+// sloLog adapt shared logger sang slosnapshot.Logger (msg, kv...) — gộp kv vào
+// message vì shared logger chỉ nhận 1 cặp key/value.
+type sloLog struct{ log *logger.Logger }
+
+func (l sloLog) Info(msg string, kv ...any) { l.log.Info(context.Background(), joinKV(msg, kv...)) }
+func (l sloLog) Error(msg string, kv ...any) {
+	l.log.Error(context.Background(), nil, joinKV(msg, kv...))
+}
+
+func joinKV(msg string, kv ...any) string {
+	out := msg
+	for i := 0; i+1 < len(kv); i += 2 {
+		out += fmt.Sprintf(" %v=%v", kv[i], kv[i+1])
+	}
+	return out
 }
 
 // envIntOr đọc một biến môi trường số nguyên dương; rỗng/không hợp lệ → fallback.
@@ -277,8 +338,14 @@ func run() error {
 		log,
 	)
 
-	alerting := buildAlerting(pool, cfg)
-	go alerting.relay.Run(ctx)
+	// Một bus + một relay dùng chung cho mọi BC (alerting + slo) — chỉ một relay
+	// quét outbox để tránh claim chéo event (SKIP LOCKED) làm BC kia bỏ lỡ sync.
+	bus := outbox.NewBus()
+	alerting := buildAlerting(pool, cfg, bus)
+	slo := buildSLO(pool, cfg, bus, log)
+	relay := outbox.NewRelay(outbox.NewStore(pool), bus.Dispatch)
+	go relay.Run(ctx)
+	go slo.snapshotJob.Run(ctx) // budget snapshot định kỳ (stop qua ctx)
 
 	// Log search (GĐ2.8): truy vấn data stream logs-* trên Elasticsearch. Optional —
 	// ELASTICSEARCH_URL rỗng (stack nhẹ) → không đăng ký /logs.
@@ -294,7 +361,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -323,7 +390,7 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
-	alerting.relay.Wait() // ctx đã hủy → relay thoát; chờ goroutine kết thúc hẳn
+	relay.Wait() // ctx đã hủy → relay thoát; chờ goroutine kết thúc hẳn
 	return nil
 }
 
@@ -333,6 +400,7 @@ func buildRouter(
 	svc *userapp.Service,
 	refreshSvc *userapp.RefreshService,
 	alerting alertingDeps,
+	slo sloDeps,
 	logHandler *loghttp.LogHandler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
@@ -388,6 +456,7 @@ func buildRouter(
 	alerting.handler.Register(api, auth.RequireAuth(jwtSvc))
 	alerting.instanceHandler.Register(api, auth.RequireAuth(jwtSvc), auth.RequireBearerToken(webhookToken))
 	alerting.silenceHandler.Register(api, auth.RequireAuth(jwtSvc))
+	slo.handler.Register(api, auth.RequireAuth(jwtSvc))
 	if logHandler != nil {
 		logHandler.Register(api, auth.RequireAuth(jwtSvc))
 	}
