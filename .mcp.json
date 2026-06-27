@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "drawio-ai-kit": {
+      "command": "node",
+      "args": ["tools/drawio-ai-kit/src/mcp-server.mjs"]
+    }
+  }
+}

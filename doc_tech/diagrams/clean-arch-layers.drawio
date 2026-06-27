@@ -1,0 +1,23 @@
+<mxfile host="app.diagrams.net"><diagram name="Clean Architecture layers" id="d"><mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1202" pageHeight="420" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="root" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=top;" vertex="1" parent="1"><mxGeometry x="40" y="80" width="1122" height="290" as="geometry"/></mxCell><mxCell id="row" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=top;" vertex="1" parent="root"><mxGeometry x="12" y="12" width="1098" height="180" as="geometry"/></mxCell><mxCell id="adapters" value="ADAPTERS
+(adapters/)
+
+HTTP handlers (Gin)
+Postgres repo (pgx)
+Redis · Prometheus
+Slack notifier" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FDEEE0;strokeColor=#ED7100;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=middle;" vertex="1" parent="row"><mxGeometry x="24" y="24" width="210" height="132" as="geometry"/></mxCell><mxCell id="ports" value="PORTS
+(ports/) — interfaces
+
+Repository · Cache
+Notifier
+EventPublisher" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EEF1F5;strokeColor=#5A6B7B;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=middle;" vertex="1" parent="row"><mxGeometry x="304" y="24" width="210" height="132" as="geometry"/></mxCell><mxCell id="app" value="APP
+(app/) — use cases
+
+LoginUser
+FireAlert
+RotateRefreshToken" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EAF2FB;strokeColor=#3B6FB0;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=middle;" vertex="1" parent="row"><mxGeometry x="584" y="24" width="210" height="132" as="geometry"/></mxCell><mxCell id="domain" value="DOMAIN
+(domain/) — core
+
+entities · value objects
+domain errors · events
+import: chỉ stdlib" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EAF3EC;strokeColor=#5E9B57;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=middle;" vertex="1" parent="row"><mxGeometry x="864" y="24" width="210" height="132" as="geometry"/></mxCell><mxCell id="note" value="Dependency Rule: phụ thuộc CHỈ hướng vào trong (domain). domain không biết gì về adapters.
+ports do app/domain định nghĩa (DIP); adapters implement ports → dễ thay thế &amp; test bằng mock." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF8E6;strokeColor=#D6B656;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="root"><mxGeometry x="71" y="222" width="980" height="56" as="geometry"/></mxCell><mxCell id="__title" value="Clean Architecture — adapters → ports ← app → domain (một chiều)" style="text;html=1;align=center;fontStyle=1;fontSize=14;fontColor=light-dark(#232F3E,#E8E8E8);" vertex="1" parent="1"><mxGeometry x="0" y="24" width="1202" height="30" as="geometry"/></mxCell><mxCell id="ed1" value="implements" style="edgeStyle=orthogonalEdgeStyle;html=1;jettySize=auto;orthogonalLoop=1;fontSize=10;fontColor=#1B2733;strokeColor=#2D6A9F;strokeWidth=2;rounded=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.500;exitDx=0;exitDy=0;entryX=0;entryY=0.500;entryDx=0;entryDy=0;" edge="1" parent="1" source="adapters" target="ports"><mxGeometry relative="1" as="geometry"></mxGeometry></mxCell><mxCell id="ed2" value="depends on" style="edgeStyle=orthogonalEdgeStyle;html=1;jettySize=auto;orthogonalLoop=1;fontSize=10;fontColor=#1B2733;strokeColor=#2D6A9F;strokeWidth=2;rounded=0;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="app" target="ports"><mxGeometry relative="1" as="geometry"></mxGeometry></mxCell><mxCell id="ed3" value="uses" style="edgeStyle=orthogonalEdgeStyle;html=1;jettySize=auto;orthogonalLoop=1;fontSize=10;fontColor=#1B2733;strokeColor=#2D6A9F;strokeWidth=2;rounded=0;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="app" target="domain"><mxGeometry relative="1" as="geometry"></mxGeometry></mxCell></root></mxGraphModel></diagram></mxfile>

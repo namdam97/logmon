@@ -1,0 +1,39 @@
+<mxfile host="app.diagrams.net"><diagram name="DB ERD" id="d"><mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1326" pageHeight="522" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="root" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=top;" vertex="1" parent="1"><mxGeometry x="40" y="80" width="1246" height="392" as="geometry"/></mxCell><mxCell id="idg" value="identity (user→identity)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EAF2FB;strokeColor=#3B6FB0;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=top;" vertex="1" parent="root"><mxGeometry x="12" y="12" width="268" height="368" as="geometry"/></mxCell><mxCell id="users" value="users
+──────
+id (PK, TEXT)
+email (UNIQUE)
+password_hash (argon2id)
+created_at" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#3B6FB0;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="idg"><mxGeometry x="24" y="60" width="220" height="132" as="geometry"/></mxCell><mxCell id="rtok" value="refresh_tokens
+──────
+id (PK)
+user_id → users.id
+family_id · token_hash (UQ)
+used_at · expires_at" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#3B6FB0;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="idg"><mxGeometry x="24" y="212" width="220" height="132" as="geometry"/></mxCell><mxCell id="alg" value="alerting" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F3EEF8;strokeColor=#8C4FFF;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=top;" vertex="1" parent="root"><mxGeometry x="330" y="12" width="268" height="368" as="geometry"/></mxCell><mxCell id="rules" value="alert_rules
+──────
+id (PK) · workspace_id
+name · expression (PromQL)
+severity · enabled
+sync_status" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#8C4FFF;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="alg"><mxGeometry x="24" y="60" width="220" height="132" as="geometry"/></mxCell><mxCell id="inst" value="alert_instances
+──────
+id (PK)
+rule_id → alert_rules.id (nullable)
+fingerprint · status
+fired/ack/resolved_at" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#8C4FFF;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="alg"><mxGeometry x="24" y="212" width="220" height="132" as="geometry"/></mxCell><mxCell id="slg" value="slo" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EAF3EC;strokeColor=#5E9B57;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=top;" vertex="1" parent="root"><mxGeometry x="648" y="12" width="268" height="368" as="geometry"/></mxCell><mxCell id="slos" value="slos
+──────
+id (PK) · workspace_id
+name · service
+sli_type · window_days
+sync_status" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#5E9B57;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="slg"><mxGeometry x="24" y="60" width="220" height="132" as="geometry"/></mxCell><mxCell id="snap" value="slo_snapshots
+──────
+id (PK)
+slo_id → slos.id
+recorded_at
+(error budget theo thời gian)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#5E9B57;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="slg"><mxGeometry x="24" y="212" width="220" height="132" as="geometry"/></mxCell><mxCell id="shg" value="shared kernel" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF8E6;strokeColor=#D6B656;fontColor=#1A1A1A;fontSize=11;fontStyle=1;verticalAlign=top;" vertex="1" parent="root"><mxGeometry x="966" y="12" width="268" height="316" as="geometry"/></mxCell><mxCell id="outbox" value="outbox_events
+──────
+id (PK, identity)
+aggregate_type/id · event_type
+payload (JSONB)
+status · retry_count" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#D6B656;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="shg"><mxGeometry x="24" y="60" width="220" height="132" as="geometry"/></mxCell><mxCell id="ws" value="workspaces (planned)
+workspace_id ở các bảng
+= khóa tenant
+(identity BC, GĐ3)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F2F2F2;strokeColor=#999;fontColor=#1A1A1A;fontSize=11;fontStyle=0;verticalAlign=middle;" vertex="1" parent="shg"><mxGeometry x="24" y="212" width="220" height="80" as="geometry"/></mxCell><mxCell id="__title" value="LogMon — Database ERD (backend/migrations; nhóm theo Bounded Context)" style="text;html=1;align=center;fontStyle=1;fontSize=14;fontColor=light-dark(#232F3E,#E8E8E8);" vertex="1" parent="1"><mxGeometry x="0" y="24" width="1326" height="30" as="geometry"/></mxCell><mxCell id="ed1" value="user_id (FK, CASCADE)" style="edgeStyle=orthogonalEdgeStyle;html=1;jettySize=auto;orthogonalLoop=1;fontSize=10;fontColor=#1B2733;strokeColor=#2D6A9F;strokeWidth=2;rounded=1;labelBackgroundColor=#FFFFFF;exitX=0.500;exitY=0;exitDx=0;exitDy=0;entryX=0.500;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="rtok" target="users"><mxGeometry relative="1" as="geometry"></mxGeometry></mxCell><mxCell id="ed2" value="rule_id (FK, nullable)" style="edgeStyle=orthogonalEdgeStyle;html=1;jettySize=auto;orthogonalLoop=1;fontSize=10;fontColor=#1B2733;strokeColor=#2D6A9F;strokeWidth=2;rounded=1;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.500;exitY=0;exitDx=0;exitDy=0;entryX=0.500;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="inst" target="rules"><mxGeometry relative="1" as="geometry"></mxGeometry></mxCell><mxCell id="ed3" value="slo_id (FK, CASCADE)" style="edgeStyle=orthogonalEdgeStyle;html=1;jettySize=auto;orthogonalLoop=1;fontSize=10;fontColor=#1B2733;strokeColor=#2D6A9F;strokeWidth=2;rounded=1;labelBackgroundColor=#FFFFFF;exitX=0.500;exitY=0;exitDx=0;exitDy=0;entryX=0.500;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="snap" target="slos"><mxGeometry relative="1" as="geometry"></mxGeometry></mxCell></root></mxGraphModel></diagram></mxfile>
