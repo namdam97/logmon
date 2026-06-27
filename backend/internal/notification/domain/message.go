@@ -24,6 +24,8 @@ type Message struct {
 	Subject     string
 	Body        string
 	DedupKey    string
+	// Attempt là số lần đã thử gửi (0 = lần đầu) — worker dùng để backoff/giới hạn retry.
+	Attempt int
 }
 
 // HistoryEntry là read model một bản ghi lịch sử gửi (UI debug "vì sao không nhận").
