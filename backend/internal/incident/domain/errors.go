@@ -18,6 +18,12 @@ var (
 	ErrScheduleNotFound = errors.New("on-call schedule not found")
 	// ErrEscalationPolicyNotFound: không tồn tại escalation policy cho workspace.
 	ErrEscalationPolicyNotFound = errors.New("escalation policy not found")
+	// ErrPostmortemNotFound: incident chưa có postmortem.
+	ErrPostmortemNotFound = errors.New("postmortem not found")
+	// ErrPostmortemPublished: không sửa được postmortem đã chốt.
+	ErrPostmortemPublished = errors.New("postmortem already published")
+	// ErrActionItemNotFound: không tồn tại action item theo định danh.
+	ErrActionItemNotFound = errors.New("action item not found")
 )
 
 // ValidationError mô tả input không hợp lệ trên một field.
