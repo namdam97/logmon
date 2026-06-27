@@ -21,6 +21,17 @@ var (
 	// ErrRefreshTokenReused: refresh token đã rotate bị dùng lại — dấu hiệu token
 	// bị đánh cắp; toàn bộ family bị thu hồi.
 	ErrRefreshTokenReused = errors.New("refresh token reused")
+	// ErrWorkspaceNotFound: không tồn tại workspace theo định danh (hoặc user
+	// không phải member — map sang 404 để không lộ tồn tại).
+	ErrWorkspaceNotFound = errors.New("workspace not found")
+	// ErrSlugTaken: slug workspace đã được dùng.
+	ErrSlugTaken = errors.New("workspace slug already taken")
+	// ErrNotMember: user không phải thành viên của workspace.
+	ErrNotMember = errors.New("not a workspace member")
+	// ErrMembershipExists: user đã là thành viên của workspace.
+	ErrMembershipExists = errors.New("already a workspace member")
+	// ErrLastAdmin: không thể hạ quyền/xóa admin cuối cùng của workspace.
+	ErrLastAdmin = errors.New("cannot remove the last admin")
 )
 
 // ValidationError mô tả input không hợp lệ trên một field. Suffix "Error" theo
