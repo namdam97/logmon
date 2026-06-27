@@ -31,10 +31,17 @@ type IncidentRepository struct {
 }
 
 var (
-	_ ports.IncidentRepository = (*IncidentRepository)(nil)
-	_ ports.IncidentReader     = (*IncidentRepository)(nil)
-	_ ports.UnackedReader      = (*IncidentRepository)(nil)
+	_ ports.IncidentRepository  = (*IncidentRepository)(nil)
+	_ ports.IncidentReader      = (*IncidentRepository)(nil)
+	_ ports.UnackedReader       = (*IncidentRepository)(nil)
+	_ ports.PostmortemDueReader = (*IncidentRepository)(nil)
 )
+
+// _postmortemSeverities là severity bắt buộc postmortem (doc_v2/06 §1.5).
+var _postmortemSeverities = []string{
+	domain.SEV1.String(),
+	domain.SEV2.String(),
+}
 
 // _unackedStatuses là incident active nhưng CHƯA được ack (chưa Assigned) — đầu
 // vào escalation runner.
@@ -126,6 +133,15 @@ func (r *IncidentRepository) ListUnacked(ctx context.Context) ([]domain.Incident
 	const q = `SELECT ` + incidentColumns + ` FROM incidents
 		WHERE status = ANY($1) ORDER BY created_at ASC`
 	return r.queryIncidents(ctx, q, _unackedStatuses)
+}
+
+// ListResolvedNeedingPostmortem đọc incident SEV1/SEV2 đã Resolved với
+// resolved_at <= before (đầu vào reminder auto-PostmortemPending).
+func (r *IncidentRepository) ListResolvedNeedingPostmortem(ctx context.Context, before time.Time) ([]domain.Incident, error) {
+	const q = `SELECT ` + incidentColumns + ` FROM incidents
+		WHERE status = $1 AND severity = ANY($2) AND resolved_at IS NOT NULL AND resolved_at <= $3
+		ORDER BY resolved_at ASC`
+	return r.queryIncidents(ctx, q, domain.StatusResolved.String(), _postmortemSeverities, before.UTC())
 }
 
 func (r *IncidentRepository) queryIncidents(ctx context.Context, q string, args ...any) ([]domain.Incident, error) {

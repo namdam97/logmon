@@ -83,6 +83,7 @@ const (
 	_readHeaderTimeout       = 5 * time.Second
 	_dbConnectTimeout        = 10 * time.Second
 	_escalationSweepInterval = time.Minute         // chu kỳ quét escalation (GĐ3.4)
+	_postmortemSweepInterval = time.Hour           // chu kỳ quét reminder postmortem (GĐ3.5)
 	_defaultJWTTTL           = 15 * time.Minute    // access token ngắn (ADR-023)
 	_defaultRefreshTTL       = 14 * 24 * time.Hour // refresh token dài
 	_authRatePerMinute       = 10                  // mặc định: giới hạn login/register mỗi IP
@@ -363,9 +364,11 @@ func (l notifLog) Warn(ctx context.Context, msg string) { l.log.Info(ctx, "WARN:
 
 // incidentDeps gom các thành phần incident BC dựng ở composition root.
 type incidentDeps struct {
-	handler       *incidenthttp.Handler
-	oncallHandler *incidenthttp.OnCallHandler
-	escalation    *incidentcommand.EscalationService // nil khi delivery tắt
+	handler           *incidenthttp.Handler
+	oncallHandler     *incidenthttp.OnCallHandler
+	postmortemHandler *incidenthttp.PostmortemHandler
+	escalation        *incidentcommand.EscalationService         // nil khi delivery tắt
+	reminder          *incidentcommand.PostmortemReminderService // auto 24h Resolved→PMP
 }
 
 // buildIncident dựng incident BC (GĐ3.3-3.4): state machine 7 trạng thái + timeline
@@ -400,7 +403,20 @@ func buildIncident(pool *pgxpool.Pool, bus *outbox.Bus, reg prometheus.Registere
 	oncallQ := incidentquery.NewOnCallQueries(schedRepo, ovRepo)
 	oncallHandler := incidenthttp.NewOnCallHandler(createSched, createOv, createPol, oncallQ, _defaultWorkspaceID)
 
-	deps := incidentDeps{handler: handler, oncallHandler: oncallHandler}
+	// Postmortem & action items (GĐ3.5): submit/publish + reminder auto 24h.
+	pmRepo := incidentpg.NewPostmortemRepo(pool)
+	aiRepo := incidentpg.NewActionItemRepo(pool)
+	pmHandler := incidentcommand.NewPostmortemHandler(repo, pmRepo, pmRepo, aiRepo, aiRepo, ids, clock)
+	pmQueries := incidentquery.NewPostmortemQueries(repo, pmRepo, aiRepo)
+	postmortemHandler := incidenthttp.NewPostmortemHandler(pmHandler, pmQueries, _defaultWorkspaceID)
+	reminder := incidentcommand.NewPostmortemReminderService(repo, trans, clock, 0)
+
+	deps := incidentDeps{
+		handler:           handler,
+		oncallHandler:     oncallHandler,
+		postmortemHandler: postmortemHandler,
+		reminder:          reminder,
+	}
 	if sendH != nil {
 		deps.escalation = incidentcommand.NewEscalationService(
 			repo, polRepo, schedRepo, ovRepo, stateRepo, stateRepo,
@@ -451,6 +467,28 @@ func runEscalation(ctx context.Context, svc *incidentcommand.EscalationService, 
 			}
 			if res.Escalated > 0 {
 				log.Infof(ctx, "escalation sweep", "escalated", strconv.Itoa(res.Escalated))
+			}
+		}
+	}
+}
+
+// runPostmortemReminder quét định kỳ (stop qua ctx) — auto chuyển incident SEV1/2
+// đã Resolved quá 24h sang PostmortemPending (doc_v2/06 §1.5).
+func runPostmortemReminder(ctx context.Context, svc *incidentcommand.PostmortemReminderService, log *logger.Logger) {
+	ticker := time.NewTicker(_postmortemSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			flagged, err := svc.Sweep(ctx)
+			if err != nil {
+				log.Error(ctx, err, "postmortem reminder sweep")
+				continue
+			}
+			if flagged > 0 {
+				log.Infof(ctx, "postmortem reminder sweep", "flagged", strconv.Itoa(flagged))
 			}
 		}
 	}
@@ -634,6 +672,7 @@ func run() error {
 	if incident.escalation != nil {
 		go runEscalation(ctx, incident.escalation, log) // escalation sweep định kỳ
 	}
+	go runPostmortemReminder(ctx, incident.reminder, log) // auto 24h Resolved→PMP
 	if notif.worker != nil {
 		if err := notif.queue.EnsureGroup(ctx); err != nil {
 			return fmt.Errorf("ensure delivery group: %w", err)
@@ -756,6 +795,7 @@ func buildRouter(
 	notif.handler.Register(api, auth.RequireAuth(jwtSvc))
 	incident.handler.Register(api, auth.RequireAuth(jwtSvc))
 	incident.oncallHandler.Register(api, auth.RequireAuth(jwtSvc))
+	incident.postmortemHandler.Register(api, auth.RequireAuth(jwtSvc))
 	if logHandler != nil {
 		logHandler.Register(api, auth.RequireAuth(jwtSvc))
 	}

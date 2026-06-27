@@ -60,7 +60,7 @@ func (h *Handler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
 	rg.POST("/incidents/:id/assign", authMW, h.assign)
 	rg.POST("/incidents/:id/mitigate", authMW, h.mitigate)
 	rg.POST("/incidents/:id/resolve", authMW, h.resolve)
-	rg.POST("/incidents/:id/postmortem", authMW, h.postmortem)
+	rg.POST("/incidents/:id/require-postmortem", authMW, h.postmortem)
 	rg.POST("/incidents/:id/close", authMW, h.close)
 }
 
@@ -297,6 +297,12 @@ func failDomain(c *gin.Context, err error) {
 		httpx.Fail(c, http.StatusNotFound, "on-call schedule not found")
 	case errors.Is(err, domain.ErrEscalationPolicyNotFound):
 		httpx.Fail(c, http.StatusNotFound, "escalation policy not found")
+	case errors.Is(err, domain.ErrPostmortemNotFound):
+		httpx.Fail(c, http.StatusNotFound, "postmortem not found")
+	case errors.Is(err, domain.ErrActionItemNotFound):
+		httpx.Fail(c, http.StatusNotFound, "action item not found")
+	case errors.Is(err, domain.ErrPostmortemPublished):
+		httpx.Fail(c, http.StatusConflict, "postmortem already published")
 	case errors.Is(err, domain.ErrInvalidTransition):
 		httpx.Fail(c, http.StatusConflict, err.Error())
 	default:
