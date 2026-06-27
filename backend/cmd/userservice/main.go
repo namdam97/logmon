@@ -44,7 +44,10 @@ import (
 	incidentports "github.com/namdam97/logmon/backend/internal/incident/ports"
 	"github.com/namdam97/logmon/backend/internal/logpipeline/adapters/elasticsearch"
 	loghttp "github.com/namdam97/logmon/backend/internal/logpipeline/adapters/http"
+	logpg "github.com/namdam97/logmon/backend/internal/logpipeline/adapters/postgres"
+	logcommand "github.com/namdam97/logmon/backend/internal/logpipeline/app/command"
 	logquery "github.com/namdam97/logmon/backend/internal/logpipeline/app/query"
+	logports "github.com/namdam97/logmon/backend/internal/logpipeline/ports"
 	notifhttp "github.com/namdam97/logmon/backend/internal/notification/adapters/http"
 	notifpg "github.com/namdam97/logmon/backend/internal/notification/adapters/postgres"
 	"github.com/namdam97/logmon/backend/internal/notification/adapters/redisqueue"
@@ -691,11 +694,31 @@ func run() error {
 		log.Info(context.Background(), "ELASTICSEARCH_URL chưa set — log search API (/api/v1/logs) tắt")
 	}
 
+	// Pipeline management (GĐ3.7): config + DLQ luôn bật (Postgres); ILM/health/
+	// datastreams chỉ khi có ES. DLQ replayer chưa wire (retry đánh dấu state — nợ).
+	pipeClock := usersys.NewClock()
+	pipeCfgRepo := logpg.NewConfigRepository(pool)
+	dlqRepo := logpg.NewDLQRepository(pool)
+	var (
+		ilmApplier logports.ILMApplier
+		pipeHealth logports.PipelineHealth
+		dsReader   logports.DataStreamReader
+	)
+	if cfg.esURL != "" {
+		mgmt := elasticsearch.NewManagement(cfg.esURL, cfg.esUsername, cfg.esPassword)
+		ilmApplier, pipeHealth, dsReader = mgmt, mgmt, mgmt
+	}
+	pipelineHandler := loghttp.NewPipelineHandler(
+		logcommand.NewPipelineCommands(pipeCfgRepo, ilmApplier, pipeClock),
+		logcommand.NewDLQCommands(dlqRepo, nil, pipeClock),
+		logquery.NewPipelineQueries(pipeCfgRepo, dlqRepo, pipeHealth, dsReader, pipeClock),
+	)
+
 	if cfg.webhookToken == "" {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pipelineHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -738,6 +761,7 @@ func buildRouter(
 	notif notifDeps,
 	incident incidentDeps,
 	logHandler *loghttp.LogHandler,
+	pipelineHandler *loghttp.PipelineHandler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	csrf *auth.CSRFProtector,
@@ -817,6 +841,7 @@ func buildRouter(
 	if logHandler != nil {
 		logHandler.Register(api, tenantMW)
 	}
+	pipelineHandler.Register(api, tenantMW)
 	return r
 }
 

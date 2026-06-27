@@ -30,13 +30,13 @@ func NewPipelineCommands(configs ports.PipelineConfigRepository, ilm ports.ILMAp
 }
 
 // loadOrDefault lấy config hiện có hoặc khởi tạo mặc định cho workspace.
-func (s *PipelineCommands) loadOrDefault(ctx context.Context, workspaceID string) (domain.PipelineConfig, error) {
+func (s *PipelineCommands) loadOrDefault(ctx context.Context, workspaceID string) domain.PipelineConfig {
 	cfg, err := s.configs.Get(ctx, workspaceID)
 	if err == nil {
-		return cfg, nil
+		return cfg
 	}
-	// Chưa có cấu hình → mặc định (Mode A + ILM mặc định).
-	return domain.DefaultPipelineConfig(workspaceID, s.clock.Now()), nil
+	// Chưa có cấu hình (hoặc lỗi đọc) → mặc định (Mode A + ILM mặc định).
+	return domain.DefaultPipelineConfig(workspaceID, s.clock.Now())
 }
 
 // SwitchMode đổi chế độ pipeline (A↔B) cho workspace. Lưu desired-state; việc
@@ -46,10 +46,7 @@ func (s *PipelineCommands) SwitchMode(ctx context.Context, workspaceID, mode, by
 	if err != nil {
 		return domain.PipelineConfig{}, err
 	}
-	cfg, err := s.loadOrDefault(ctx, workspaceID)
-	if err != nil {
-		return domain.PipelineConfig{}, err
-	}
+	cfg := s.loadOrDefault(ctx, workspaceID)
 	updated, err := cfg.WithMode(m, by, s.clock.Now())
 	if err != nil {
 		return domain.PipelineConfig{}, err
@@ -70,10 +67,7 @@ type UpdateILMInput struct {
 // UpdateILM validate + áp ILM mới: áp lên ES trước (nếu có applier), sau đó
 // persist để tránh drift desired-state khi ES từ chối.
 func (s *PipelineCommands) UpdateILM(ctx context.Context, workspaceID, namespace string, in UpdateILMInput, by string) (domain.PipelineConfig, error) {
-	cfg, err := s.loadOrDefault(ctx, workspaceID)
-	if err != nil {
-		return domain.PipelineConfig{}, err
-	}
+	cfg := s.loadOrDefault(ctx, workspaceID)
 	policy := domain.ILMPolicy{HotDays: in.HotDays, WarmDays: in.WarmDays, DeleteDays: in.DeleteDays}
 	updated, err := cfg.WithILM(policy, by, s.clock.Now())
 	if err != nil {
