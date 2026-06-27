@@ -1,0 +1,119 @@
+groups:
+    - name: logmon-slo-11111111-1111-1111-1111-111111111111
+      rules:
+        - record: slo:errors:ratio_rate5m
+          expr: sum(rate(logmon_http_requests_total{service="checkout",status=~"5.."}[5m])) / sum(rate(logmon_http_requests_total{service="checkout"}[5m]))
+          labels:
+            service: checkout
+            slo: 11111111-1111-1111-1111-111111111111
+            window: 5m
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate30m
+          expr: sum(rate(logmon_http_requests_total{service="checkout",status=~"5.."}[30m])) / sum(rate(logmon_http_requests_total{service="checkout"}[30m]))
+          labels:
+            service: checkout
+            slo: 11111111-1111-1111-1111-111111111111
+            window: 30m
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate1h
+          expr: sum(rate(logmon_http_requests_total{service="checkout",status=~"5.."}[1h])) / sum(rate(logmon_http_requests_total{service="checkout"}[1h]))
+          labels:
+            service: checkout
+            slo: 11111111-1111-1111-1111-111111111111
+            window: 1h
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate6h
+          expr: sum(rate(logmon_http_requests_total{service="checkout",status=~"5.."}[6h])) / sum(rate(logmon_http_requests_total{service="checkout"}[6h]))
+          labels:
+            service: checkout
+            slo: 11111111-1111-1111-1111-111111111111
+            window: 6h
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate3d
+          expr: sum(rate(logmon_http_requests_total{service="checkout",status=~"5.."}[3d])) / sum(rate(logmon_http_requests_total{service="checkout"}[3d]))
+          labels:
+            service: checkout
+            slo: 11111111-1111-1111-1111-111111111111
+            window: 3d
+            workspace: 00000000-0000-0000-0000-000000000001
+        - alert: SLOBurnRate_11111111-1111-1111-1111-111111111111_critical
+          expr: (slo:errors:ratio_rate1h{slo="11111111-1111-1111-1111-111111111111"} > (14.4 * 0.0010000000000000009) and slo:errors:ratio_rate5m{slo="11111111-1111-1111-1111-111111111111"} > (14.4 * 0.0010000000000000009)) or (slo:errors:ratio_rate6h{slo="11111111-1111-1111-1111-111111111111"} > (6 * 0.0010000000000000009) and slo:errors:ratio_rate30m{slo="11111111-1111-1111-1111-111111111111"} > (6 * 0.0010000000000000009))
+          for: 2m
+          labels:
+            service: checkout
+            severity: critical
+            slo: 11111111-1111-1111-1111-111111111111
+            workspace: 00000000-0000-0000-0000-000000000001
+          annotations:
+            runbook_url: https://runbooks.logmon.local/slo-burn-rate
+            summary: SLO "checkout availability" (checkout) burning error budget (critical)
+        - alert: SLOBurnRate_11111111-1111-1111-1111-111111111111_warning
+          expr: (slo:errors:ratio_rate3d{slo="11111111-1111-1111-1111-111111111111"} > (1 * 0.0010000000000000009) and slo:errors:ratio_rate6h{slo="11111111-1111-1111-1111-111111111111"} > (1 * 0.0010000000000000009))
+          for: 15m
+          labels:
+            service: checkout
+            severity: warning
+            slo: 11111111-1111-1111-1111-111111111111
+            workspace: 00000000-0000-0000-0000-000000000001
+          annotations:
+            runbook_url: https://runbooks.logmon.local/slo-burn-rate
+            summary: SLO "checkout availability" (checkout) burning error budget (warning)
+    - name: logmon-slo-22222222-2222-2222-2222-222222222222
+      rules:
+        - record: slo:errors:ratio_rate5m
+          expr: 1 - (sum(rate(logmon_http_request_duration_seconds_bucket{service="api",le="0.25"}[5m])) / sum(rate(logmon_http_request_duration_seconds_count{service="api"}[5m])))
+          labels:
+            service: api
+            slo: 22222222-2222-2222-2222-222222222222
+            window: 5m
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate30m
+          expr: 1 - (sum(rate(logmon_http_request_duration_seconds_bucket{service="api",le="0.25"}[30m])) / sum(rate(logmon_http_request_duration_seconds_count{service="api"}[30m])))
+          labels:
+            service: api
+            slo: 22222222-2222-2222-2222-222222222222
+            window: 30m
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate1h
+          expr: 1 - (sum(rate(logmon_http_request_duration_seconds_bucket{service="api",le="0.25"}[1h])) / sum(rate(logmon_http_request_duration_seconds_count{service="api"}[1h])))
+          labels:
+            service: api
+            slo: 22222222-2222-2222-2222-222222222222
+            window: 1h
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate6h
+          expr: 1 - (sum(rate(logmon_http_request_duration_seconds_bucket{service="api",le="0.25"}[6h])) / sum(rate(logmon_http_request_duration_seconds_count{service="api"}[6h])))
+          labels:
+            service: api
+            slo: 22222222-2222-2222-2222-222222222222
+            window: 6h
+            workspace: 00000000-0000-0000-0000-000000000001
+        - record: slo:errors:ratio_rate3d
+          expr: 1 - (sum(rate(logmon_http_request_duration_seconds_bucket{service="api",le="0.25"}[3d])) / sum(rate(logmon_http_request_duration_seconds_count{service="api"}[3d])))
+          labels:
+            service: api
+            slo: 22222222-2222-2222-2222-222222222222
+            window: 3d
+            workspace: 00000000-0000-0000-0000-000000000001
+        - alert: SLOBurnRate_22222222-2222-2222-2222-222222222222_critical
+          expr: (slo:errors:ratio_rate1h{slo="22222222-2222-2222-2222-222222222222"} > (14.4 * 0.010000000000000009) and slo:errors:ratio_rate5m{slo="22222222-2222-2222-2222-222222222222"} > (14.4 * 0.010000000000000009)) or (slo:errors:ratio_rate6h{slo="22222222-2222-2222-2222-222222222222"} > (6 * 0.010000000000000009) and slo:errors:ratio_rate30m{slo="22222222-2222-2222-2222-222222222222"} > (6 * 0.010000000000000009))
+          for: 2m
+          labels:
+            service: api
+            severity: critical
+            slo: 22222222-2222-2222-2222-222222222222
+            workspace: 00000000-0000-0000-0000-000000000001
+          annotations:
+            runbook_url: https://runbooks.logmon.local/slo-burn-rate
+            summary: SLO "api latency" (api) burning error budget (critical)
+        - alert: SLOBurnRate_22222222-2222-2222-2222-222222222222_warning
+          expr: (slo:errors:ratio_rate3d{slo="22222222-2222-2222-2222-222222222222"} > (1 * 0.010000000000000009) and slo:errors:ratio_rate6h{slo="22222222-2222-2222-2222-222222222222"} > (1 * 0.010000000000000009))
+          for: 15m
+          labels:
+            service: api
+            severity: warning
+            slo: 22222222-2222-2222-2222-222222222222
+            workspace: 00000000-0000-0000-0000-000000000001
+          annotations:
+            runbook_url: https://runbooks.logmon.local/slo-burn-rate
+            summary: SLO "api latency" (api) burning error budget (warning)
