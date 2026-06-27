@@ -20,6 +20,7 @@ import (
 	"github.com/exaring/otelpgx"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
@@ -33,6 +34,13 @@ import (
 	"github.com/namdam97/logmon/backend/internal/alerting/app/command"
 	"github.com/namdam97/logmon/backend/internal/alerting/app/query"
 	alertingdomain "github.com/namdam97/logmon/backend/internal/alerting/domain"
+	incidenthttp "github.com/namdam97/logmon/backend/internal/incident/adapters/http"
+	incidentmetrics "github.com/namdam97/logmon/backend/internal/incident/adapters/metrics"
+	incidentpg "github.com/namdam97/logmon/backend/internal/incident/adapters/postgres"
+	incidentsys "github.com/namdam97/logmon/backend/internal/incident/adapters/system"
+	incidentcommand "github.com/namdam97/logmon/backend/internal/incident/app/command"
+	incidentquery "github.com/namdam97/logmon/backend/internal/incident/app/query"
+	incidentdomain "github.com/namdam97/logmon/backend/internal/incident/domain"
 	"github.com/namdam97/logmon/backend/internal/logpipeline/adapters/elasticsearch"
 	loghttp "github.com/namdam97/logmon/backend/internal/logpipeline/adapters/http"
 	logquery "github.com/namdam97/logmon/backend/internal/logpipeline/app/query"
@@ -272,6 +280,7 @@ type notifDeps struct {
 	handler *notifhttp.Handler
 	worker  *notifworker.Worker
 	queue   *redisqueue.Queue
+	send    *notify.SendHandler // nil khi delivery tắt; dùng wire incident→notification
 }
 
 // notifEncKey trả key mã hóa config kênh: ưu tiên NOTIFICATION_ENCRYPTION_KEY,
@@ -320,7 +329,7 @@ func buildNotification(pool *pgxpool.Pool, cfg config, bus *outbox.Bus, log *log
 	worker := notifworker.NewWorker(queue, queue, senders, histRepo, clock, log)
 	bus.Subscribe(slodomain.EventBudgetExhausted, budgetExhaustedToSend(sendH))
 
-	return notifDeps{handler: handler, worker: worker, queue: queue}, nil
+	return notifDeps{handler: handler, worker: worker, queue: queue, send: sendH}, nil
 }
 
 // budgetExhaustedToSend map outbox event BudgetExhausted → SendInput (slo_budget_warning).
@@ -349,6 +358,79 @@ func budgetExhaustedToSend(sendH *notify.SendHandler) outbox.Handler {
 type notifLog struct{ log *logger.Logger }
 
 func (l notifLog) Warn(ctx context.Context, msg string) { l.log.Info(ctx, "WARN: "+msg) }
+
+// incidentDeps gom các thành phần incident BC dựng ở composition root.
+type incidentDeps struct {
+	handler *incidenthttp.Handler
+}
+
+// buildIncident dựng incident BC (GĐ3.3): state machine 7 trạng thái + timeline
+// (transactional outbox) + metrics MTTA/MTTR (registry dùng chung). Subscribe
+// BudgetExhausted (SLO) → auto-create SEV2 incident (dedup theo sloId). Sự kiện
+// IncidentCreated/Resolved phát ra outbox để notification gửi (wire ở run()).
+func buildIncident(pool *pgxpool.Pool, bus *outbox.Bus, reg prometheus.Registerer) incidentDeps {
+	store := outbox.NewStore(pool)
+	repo := incidentpg.NewIncidentRepository(pool)
+	tlRepo := incidentpg.NewTimelineRepository(pool)
+	txm := incidentpg.NewTxManager(pool)
+	publisher := incidentpg.NewEventPublisher(pool, store)
+	mx := incidentmetrics.New(reg)
+	ids := incidentsys.NewUUIDGenerator()
+	clock := incidentsys.NewClock()
+
+	create := incidentcommand.NewCreateIncidentHandler(txm, repo, repo, tlRepo, publisher, mx, ids, clock)
+	trans := incidentcommand.NewTransitionHandler(txm, repo, repo, tlRepo, publisher, mx, ids, clock)
+	queries := incidentquery.NewIncidentQueries(repo, tlRepo)
+	handler := incidenthttp.NewHandler(create, trans, queries, _defaultWorkspaceID)
+
+	bus.Subscribe(slodomain.EventBudgetExhausted, budgetExhaustedToIncident(create))
+	return incidentDeps{handler: handler}
+}
+
+// budgetExhaustedToIncident map outbox event BudgetExhausted → auto-create SEV2
+// incident (doc_v2/06 §1.1-1.2). Idempotent: handler dedup theo source+sloId.
+func budgetExhaustedToIncident(create *incidentcommand.CreateIncidentHandler) outbox.Handler {
+	return func(ctx context.Context, e outbox.Event) error {
+		var p slodomain.BudgetExhaustedPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal budget exhausted payload: %w", err)
+		}
+		_, err := create.Handle(ctx, incidentcommand.CreateIncidentInput{
+			WorkspaceID: p.WorkspaceID,
+			Title:       fmt.Sprintf("SLO budget exhausted: %s", p.Service),
+			Description: fmt.Sprintf("Error budget còn %.2f%% cho service %s", p.BudgetRemainingPercent, p.Service),
+			Service:     p.Service,
+			Severity:    incidentdomain.SEV2.String(),
+			Source:      incidentdomain.SourceSLOBudget.String(),
+			SourceRef:   p.SLOID,
+			Actor:       "system",
+		})
+		return err
+	}
+}
+
+// incidentToSend map outbox event incident (Created/Resolved) → notification send
+// với event type tương ứng (đóng vòng incident → thông báo đa kênh).
+func incidentToSend(sendH *notify.SendHandler, notifEventType string) outbox.Handler {
+	return func(ctx context.Context, e outbox.Event) error {
+		var p incidentdomain.IncidentPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal incident payload: %w", err)
+		}
+		return sendH.Handle(ctx, notify.SendInput{
+			WorkspaceID: p.WorkspaceID,
+			EventType:   notifEventType,
+			EventRef:    p.IncidentID,
+			Data: map[string]string{
+				"title":    p.Title,
+				"service":  p.Service,
+				"severity": p.Severity,
+				"status":   p.Status,
+			},
+			DedupKey: "incident-" + p.IncidentID + "-" + p.Status,
+		})
+	}
+}
 
 // envIntOr đọc một biến môi trường số nguyên dương; rỗng/không hợp lệ → fallback.
 func envIntOr(key string, fallback int) int {
@@ -467,6 +549,16 @@ func run() error {
 		return err
 	}
 
+	// Incident BC (GĐ3.3): state machine + MTTA/MTTR. Subscribe BudgetExhausted
+	// → auto-create SEV2. Đăng ký TRƯỚC relay.Run để subscription sẵn sàng.
+	incident := buildIncident(pool, bus, mx.Registry())
+	// Đóng vòng incident → notification: IncidentCreated/Resolved phát ra outbox,
+	// relay dispatch → send qua kênh đã đăng ký (chỉ khi delivery bật).
+	if notif.send != nil {
+		bus.Subscribe(incidentdomain.EventIncidentCreated, incidentToSend(notif.send, notifdomain.EventIncidentCreated))
+		bus.Subscribe(incidentdomain.EventIncidentResolved, incidentToSend(notif.send, notifdomain.EventIncidentResolved))
+	}
+
 	relay := outbox.NewRelay(outbox.NewStore(pool), bus.Dispatch)
 	go relay.Run(ctx)
 	go slo.snapshotJob.Run(ctx) // budget snapshot định kỳ (stop qua ctx)
@@ -491,7 +583,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -532,6 +624,7 @@ func buildRouter(
 	alerting alertingDeps,
 	slo sloDeps,
 	notif notifDeps,
+	incident incidentDeps,
 	logHandler *loghttp.LogHandler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
@@ -589,6 +682,7 @@ func buildRouter(
 	alerting.silenceHandler.Register(api, auth.RequireAuth(jwtSvc))
 	slo.handler.Register(api, auth.RequireAuth(jwtSvc))
 	notif.handler.Register(api, auth.RequireAuth(jwtSvc))
+	incident.handler.Register(api, auth.RequireAuth(jwtSvc))
 	if logHandler != nil {
 		logHandler.Register(api, auth.RequireAuth(jwtSvc))
 	}

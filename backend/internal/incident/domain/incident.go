@@ -15,8 +15,9 @@ const (
 )
 
 // _safeServicePattern giới hạn ký tự service (dùng làm Prometheus label —
-// cardinality + an toàn): chữ, số, '_' '-' '.'.
-var _safeServicePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$`)
+// cardinality + an toàn): chữ, số, khoảng trắng, '_' '-' '.'. Khớp với SLO
+// service pattern để auto-create từ BudgetExhausted không bị reject.
+var _safeServicePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9 _.\-]*$`)
 
 // Incident là aggregate root của incident BC. Field không export để giữ bất biến
 // — chỉ tạo qua NewIncident, chuyển trạng thái qua method trả bản copy mới
