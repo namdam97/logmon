@@ -77,13 +77,14 @@ func NewHandler(
 
 // Register gắn routes alerting. authMW bảo vệ mọi route (yêu cầu đăng nhập).
 func (h *Handler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/alert-rules", authMW, h.create)
+	editor := auth.RequireRole(auth.RoleEditor)
+	rg.POST("/alert-rules", authMW, editor, h.create)
 	rg.GET("/alert-rules", authMW, h.list)
 	rg.GET("/alert-rules/:id", authMW, h.get)
-	rg.PUT("/alert-rules/:id", authMW, h.update)
-	rg.DELETE("/alert-rules/:id", authMW, h.delete)
-	rg.POST("/alert-rules/:id/enable", authMW, h.enable)
-	rg.POST("/alert-rules/:id/disable", authMW, h.disable)
+	rg.PUT("/alert-rules/:id", authMW, editor, h.update)
+	rg.DELETE("/alert-rules/:id", authMW, editor, h.delete)
+	rg.POST("/alert-rules/:id/enable", authMW, editor, h.enable)
+	rg.POST("/alert-rules/:id/disable", authMW, editor, h.disable)
 }
 
 type createRuleRequest struct {

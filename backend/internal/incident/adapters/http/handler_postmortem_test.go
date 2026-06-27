@@ -70,7 +70,7 @@ func sampleActionItem(t *testing.T) domain.ActionItem {
 func newPMRouter(h *PostmortemHandler) *gin.Engine {
 	r := gin.New()
 	api := r.Group("/api/v1")
-	h.Register(api, func(c *gin.Context) { c.Next() })
+	h.Register(api, func(c *gin.Context) { c.Set("auth_role", "admin"); c.Next() })
 	return r
 }
 

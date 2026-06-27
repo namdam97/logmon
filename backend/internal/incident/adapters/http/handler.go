@@ -52,16 +52,17 @@ func NewHandler(creator incidentCreator, transitions incidentTransitions, querie
 
 // Register gắn routes. authMW bảo vệ mọi route.
 func (h *Handler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/incidents", authMW, h.create)
+	editor := auth.RequireRole(auth.RoleEditor)
+	rg.POST("/incidents", authMW, editor, h.create)
 	rg.GET("/incidents", authMW, h.list)
 	rg.GET("/incidents/:id", authMW, h.get)
 	rg.GET("/incidents/:id/timeline", authMW, h.timeline)
-	rg.POST("/incidents/:id/triage", authMW, h.triage)
-	rg.POST("/incidents/:id/assign", authMW, h.assign)
-	rg.POST("/incidents/:id/mitigate", authMW, h.mitigate)
-	rg.POST("/incidents/:id/resolve", authMW, h.resolve)
-	rg.POST("/incidents/:id/require-postmortem", authMW, h.postmortem)
-	rg.POST("/incidents/:id/close", authMW, h.close)
+	rg.POST("/incidents/:id/triage", authMW, editor, h.triage)
+	rg.POST("/incidents/:id/assign", authMW, editor, h.assign)
+	rg.POST("/incidents/:id/mitigate", authMW, editor, h.mitigate)
+	rg.POST("/incidents/:id/resolve", authMW, editor, h.resolve)
+	rg.POST("/incidents/:id/require-postmortem", authMW, editor, h.postmortem)
+	rg.POST("/incidents/:id/close", authMW, editor, h.close)
 }
 
 func actorFrom(c *gin.Context) string {

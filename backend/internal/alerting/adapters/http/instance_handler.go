@@ -54,7 +54,7 @@ func NewInstanceHandler(ingester webhookIngester, acknowledger instanceAcknowled
 func (h *InstanceHandler) Register(rg *gin.RouterGroup, authMW, bearerMW gin.HandlerFunc) {
 	rg.POST("/alerts/webhook", bearerMW, h.webhook)
 	rg.GET("/alerts/active", authMW, h.listActive)
-	rg.POST("/alerts/:id/acknowledge", authMW, h.acknowledge)
+	rg.POST("/alerts/:id/acknowledge", authMW, auth.RequireRole(auth.RoleEditor), h.acknowledge)
 }
 
 // alertmanagerPayload là subset payload webhook v4 của Alertmanager mà ta dùng.

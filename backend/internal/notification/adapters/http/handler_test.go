@@ -75,7 +75,7 @@ func sampleChannel(t *testing.T) domain.Channel {
 func newRouter(h *Handler) *gin.Engine {
 	r := gin.New()
 	api := r.Group("/api/v1")
-	noAuth := func(c *gin.Context) { c.Next() }
+	noAuth := func(c *gin.Context) { c.Set("auth_role", "admin"); c.Next() }
 	h.Register(api, noAuth)
 	return r
 }

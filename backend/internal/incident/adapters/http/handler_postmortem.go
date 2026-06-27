@@ -40,11 +40,12 @@ func NewPostmortemHandler(handler postmortemSubmitter, queries postmortemQueries
 
 // Register gắn routes. authMW bảo vệ mọi route.
 func (h *PostmortemHandler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/incidents/:id/postmortem", authMW, h.submit)
+	editor := auth.RequireRole(auth.RoleEditor)
+	rg.POST("/incidents/:id/postmortem", authMW, editor, h.submit)
 	rg.GET("/incidents/:id/postmortem", authMW, h.get)
-	rg.POST("/incidents/:id/postmortem/publish", authMW, h.publish)
-	rg.POST("/incidents/:id/postmortem/action-items", authMW, h.addActionItem)
-	rg.PATCH("/incidents/:id/postmortem/action-items/:itemId", authMW, h.updateActionItem)
+	rg.POST("/incidents/:id/postmortem/publish", authMW, editor, h.publish)
+	rg.POST("/incidents/:id/postmortem/action-items", authMW, editor, h.addActionItem)
+	rg.PATCH("/incidents/:id/postmortem/action-items/:itemId", authMW, editor, h.updateActionItem)
 }
 
 // ---- requests / responses ----

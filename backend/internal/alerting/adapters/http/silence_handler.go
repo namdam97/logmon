@@ -51,9 +51,10 @@ func NewSilenceHandler(creator silenceCreator, deleter silenceDeleter, lister si
 
 // Register gắn routes. authMW bảo vệ mọi route (người dùng đã đăng nhập).
 func (h *SilenceHandler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/alerts/silences", authMW, h.create)
+	editor := auth.RequireRole(auth.RoleEditor)
+	rg.POST("/alerts/silences", authMW, editor, h.create)
 	rg.GET("/alerts/silences", authMW, h.list)
-	rg.DELETE("/alerts/silences/:id", authMW, h.delete)
+	rg.DELETE("/alerts/silences/:id", authMW, editor, h.delete)
 }
 
 type matcherRequest struct {

@@ -20,7 +20,7 @@ const (
 )
 
 // AtLeast báo role hiện tại có quyền tối thiểu bằng min hay không (phân cấp).
-func (r Role) AtLeast(min Role) bool { return r >= min }
+func (r Role) AtLeast(minRole Role) bool { return r >= minRole }
 
 // String trả về biểu diễn chuỗi dùng ở API/DB.
 func (r Role) String() string {

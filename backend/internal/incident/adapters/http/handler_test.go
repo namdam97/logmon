@@ -87,8 +87,24 @@ func (s stubQueries) Timeline(context.Context, string, string) ([]domain.Timelin
 func newRouter(h *Handler) *gin.Engine {
 	r := gin.New()
 	api := r.Group("/api/v1")
-	h.Register(api, func(c *gin.Context) { c.Next() })
+	h.Register(api, func(c *gin.Context) { c.Set("auth_role", "admin"); c.Next() })
 	return r
+}
+
+// newRouterRole dựng router với role chỉ định trong context (test RBAC gating).
+func newRouterRole(h *Handler, role string) *gin.Engine {
+	r := gin.New()
+	api := r.Group("/api/v1")
+	h.Register(api, func(c *gin.Context) { c.Set("auth_role", role); c.Next() })
+	return r
+}
+
+func TestCreateIncidentRequiresEditor(t *testing.T) {
+	h := NewHandler(stubCreator{inc: sampleIncident(t, domain.StatusOpen)}, stubTransitions{}, stubQueries{}, _ws)
+	// viewer không được tạo incident → 403
+	w := doJSON(t, newRouterRole(h, "viewer"), http.MethodPost, "/api/v1/incidents",
+		`{"title":"db down","service":"orders"}`)
+	require.Equal(t, http.StatusForbidden, w.Code)
 }
 
 func doJSON(t *testing.T, r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {

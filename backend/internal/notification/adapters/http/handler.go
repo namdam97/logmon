@@ -61,13 +61,14 @@ func NewHandler(creator channelCreator, updater channelUpdater, deleter channelD
 
 // Register gắn routes. authMW bảo vệ mọi route.
 func (h *Handler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/notifications/channels", authMW, h.create)
+	admin := auth.RequireRole(auth.RoleAdmin)
+	rg.POST("/notifications/channels", authMW, admin, h.create)
 	rg.GET("/notifications/channels", authMW, h.list)
 	rg.GET("/notifications/history", authMW, h.listHistory)
 	rg.GET("/notifications/channels/:id", authMW, h.get)
-	rg.PUT("/notifications/channels/:id", authMW, h.update)
-	rg.DELETE("/notifications/channels/:id", authMW, h.delete)
-	rg.POST("/notifications/channels/:id/test", authMW, h.test)
+	rg.PUT("/notifications/channels/:id", authMW, admin, h.update)
+	rg.DELETE("/notifications/channels/:id", authMW, admin, h.delete)
+	rg.POST("/notifications/channels/:id/test", authMW, admin, h.test)
 }
 
 type channelRequest struct {

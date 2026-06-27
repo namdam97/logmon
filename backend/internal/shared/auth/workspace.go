@@ -35,12 +35,12 @@ var _roleRank = map[string]int{
 }
 
 // RoleAtLeast báo role have có quyền tối thiểu bằng min không (role lạ → false).
-func RoleAtLeast(have, min string) bool {
+func RoleAtLeast(have, minRole string) bool {
 	h, ok := _roleRank[have]
 	if !ok {
 		return false
 	}
-	return h >= _roleRank[min]
+	return h >= _roleRank[minRole]
 }
 
 // MembershipResolver giải quyết role của user trong workspace. ok=false nghĩa là
@@ -118,10 +118,10 @@ func RequireWorkspaceParam(resolver MembershipResolver, param string) gin.Handle
 
 // RequireRole chặn request nếu role trong context thấp hơn min (403). Phải đặt
 // SAU RequireWorkspace trong chuỗi middleware.
-func RequireRole(min string) gin.HandlerFunc {
+func RequireRole(minRole string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, ok := RoleFromContext(c)
-		if !ok || !RoleAtLeast(role, min) {
+		if !ok || !RoleAtLeast(role, minRole) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"success": false, "error": "forbidden"})
 			return
 		}

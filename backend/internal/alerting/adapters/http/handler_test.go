@@ -118,7 +118,7 @@ func newEngineFull(creator ruleCreator, updater ruleUpdater, deleter ruleDeleter
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := NewHandler(creator, updater, deleter, enabler, reader, testWorkspace)
-	passthrough := func(c *gin.Context) { c.Next() }
+	passthrough := func(c *gin.Context) { c.Set("auth_role", "admin"); c.Next() }
 	h.Register(r.Group("/api/v1"), passthrough)
 	return r
 }

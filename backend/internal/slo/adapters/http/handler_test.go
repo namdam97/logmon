@@ -61,7 +61,7 @@ func (s *stubQueries) Compliance(_ context.Context, _ string) ([]query.BudgetVie
 
 func newRouter(c slohttp.Handler) *gin.Engine {
 	r := gin.New()
-	c.Register(r.Group("/api/v1"), func(ctx *gin.Context) { ctx.Next() })
+	c.Register(r.Group("/api/v1"), func(ctx *gin.Context) { ctx.Set("auth_role", "admin"); ctx.Next() })
 	return r
 }
 

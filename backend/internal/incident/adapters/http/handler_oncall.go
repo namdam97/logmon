@@ -47,11 +47,12 @@ func NewOnCallHandler(schedules scheduleCreator, overrides overrideCreator, poli
 
 // Register gắn routes. authMW bảo vệ mọi route.
 func (h *OnCallHandler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/oncall/schedules", authMW, h.createSchedule)
+	admin := auth.RequireRole(auth.RoleAdmin)
+	rg.POST("/oncall/schedules", authMW, admin, h.createSchedule)
 	rg.GET("/oncall/schedules", authMW, h.listSchedules)
 	rg.GET("/oncall/schedules/:id/current", authMW, h.current)
-	rg.POST("/oncall/override", authMW, h.createOverride)
-	rg.POST("/oncall/escalation-policy", authMW, h.createPolicy)
+	rg.POST("/oncall/override", authMW, admin, h.createOverride)
+	rg.POST("/oncall/escalation-policy", authMW, admin, h.createPolicy)
 }
 
 // ---- requests / responses ----

@@ -49,12 +49,13 @@ func NewHandler(creator sloCreator, updater sloUpdater, deleter sloDeleter, quer
 
 // Register gắn routes. authMW bảo vệ mọi route. compliance đăng ký TRƯỚC :id.
 func (h *Handler) Register(rg *gin.RouterGroup, authMW gin.HandlerFunc) {
-	rg.POST("/slos", authMW, h.create)
+	editor := auth.RequireRole(auth.RoleEditor)
+	rg.POST("/slos", authMW, editor, h.create)
 	rg.GET("/slos", authMW, h.list)
 	rg.GET("/slos/compliance", authMW, h.compliance)
 	rg.GET("/slos/:id", authMW, h.get)
-	rg.PUT("/slos/:id", authMW, h.update)
-	rg.DELETE("/slos/:id", authMW, h.delete)
+	rg.PUT("/slos/:id", authMW, editor, h.update)
+	rg.DELETE("/slos/:id", authMW, editor, h.delete)
 	rg.GET("/slos/:id/budget", authMW, h.budget)
 }
 
