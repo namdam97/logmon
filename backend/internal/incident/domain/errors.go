@@ -14,6 +14,10 @@ var (
 	ErrIncidentNotFound = errors.New("incident not found")
 	// ErrInvalidTransition: chuyển trạng thái không hợp lệ theo state machine.
 	ErrInvalidTransition = errors.New("invalid status transition")
+	// ErrScheduleNotFound: không tồn tại on-call schedule theo định danh.
+	ErrScheduleNotFound = errors.New("on-call schedule not found")
+	// ErrEscalationPolicyNotFound: không tồn tại escalation policy cho workspace.
+	ErrEscalationPolicyNotFound = errors.New("escalation policy not found")
 )
 
 // ValidationError mô tả input không hợp lệ trên một field.
