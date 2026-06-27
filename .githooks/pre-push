@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+# Pre-push: mirror các gate CI RẺ để bắt lỗi trước khi đẩy lên.
+# - make lint (golangci-lint)
+# - make test (backend go test -race + FE vitest)
+# - govulncheck (allowlist dùng chung scripts/govulncheck.sh)
+# E2E + integration để CI (cần Docker/Postgres, quá nặng cho hook).
+# Tool thiếu → cảnh báo-bỏ-qua (CI vẫn backstop). Bỏ qua hook: git push --no-verify.
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+fail=0
+
+# 1) lint
+if command -v golangci-lint >/dev/null 2>&1; then
+  echo "▶ make lint"
+  make lint || fail=1
+else
+  echo "⚠ golangci-lint không có — bỏ qua lint (CI vẫn chặn)."
+fi
+
+# 2) unit test (backend race + FE vitest)
+echo "▶ make test"
+make test || fail=1
+
+# 3) govulncheck (allowlist)
+echo "▶ make vuln"
+make vuln || fail=1
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-push FAIL — sửa rồi push lại (bỏ qua: git push --no-verify)."
+  exit 1
+fi
+echo "✓ pre-push OK"

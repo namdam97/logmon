@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# Pre-commit NHANH (mục tiêu vài giây): chỉ kiểm tra trên file đang staged.
+# - gofmt: chặn commit code Go chưa format.
+# - gitleaks: chặn commit secret (native → docker → cảnh báo-bỏ-qua nếu thiếu cả hai).
+# Gate nặng (lint/test/govulncheck) nằm ở pre-push. Bỏ qua hook: git commit --no-verify.
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+fail=0
+
+# 1) gofmt cho file .go đang staged.
+go_files="$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)"
+if [ -n "$go_files" ]; then
+  unformatted="$(printf '%s\n' "$go_files" | xargs gofmt -l 2>/dev/null || true)"
+  if [ -n "$unformatted" ]; then
+    echo "✗ gofmt — file chưa format:"
+    printf '    %s\n' $unformatted
+    echo "  → chạy: make fmt"
+    fail=1
+  fi
+fi
+
+# 2) gitleaks trên thay đổi staged (chống commit secret).
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --source "$ROOT" --config "$ROOT/.gitleaks.toml" --no-banner || fail=1
+elif command -v docker >/dev/null 2>&1; then
+  docker run --rm -v "$ROOT:/repo" zricethezav/gitleaks:latest \
+    protect --staged --source /repo --config /repo/.gitleaks.toml --no-banner || fail=1
+else
+  echo "⚠ không có gitleaks lẫn docker — bỏ qua secret scan (CI vẫn chặn)."
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit FAIL — sửa rồi commit lại (bỏ qua: git commit --no-verify)."
+  exit 1
+fi
