@@ -210,10 +210,12 @@ func TestMembershipResolver(t *testing.T) {
 	require.NoError(t, mem.Save(context.Background(), m))
 
 	r := app.NewMembershipResolver(mem)
-	role, err := r.Resolve(context.Background(), "u-1", "ws-1")
+	role, ok, err := r.Resolve(context.Background(), "u-1", "ws-1")
 	require.NoError(t, err)
+	require.True(t, ok)
 	require.Equal(t, "editor", role)
 
-	_, err = r.Resolve(context.Background(), "ghost", "ws-1")
-	require.ErrorIs(t, err, domain.ErrNotMember)
+	_, ok, err = r.Resolve(context.Background(), "ghost", "ws-1")
+	require.NoError(t, err)
+	require.False(t, ok)
 }

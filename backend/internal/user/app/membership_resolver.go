@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"github.com/namdam97/logmon/backend/internal/user/domain"
 	"github.com/namdam97/logmon/backend/internal/user/ports"
@@ -19,20 +20,24 @@ func NewMembershipResolver(memReader ports.MembershipReader) *MembershipResolver
 	return &MembershipResolver{memReader: memReader}
 }
 
-// Resolve trả role (chuỗi) của user trong workspace. Trả domain.ErrNotMember nếu
-// user không thuộc workspace (middleware map sang 404).
-func (r *MembershipResolver) Resolve(ctx context.Context, userID, workspaceID string) (string, error) {
+// Resolve trả role (chuỗi) của user trong workspace. ok=false nghĩa là không
+// phải thành viên (hoặc input không hợp lệ) → middleware map sang 404 để không
+// lộ tồn tại; err!=nil chỉ dành cho lỗi hạ tầng (middleware map sang 500).
+func (r *MembershipResolver) Resolve(ctx context.Context, userID, workspaceID string) (string, bool, error) {
 	wid, err := domain.NewWorkspaceID(workspaceID)
 	if err != nil {
-		return "", err
+		return "", false, nil
 	}
 	uid, err := domain.NewUserID(userID)
 	if err != nil {
-		return "", err
+		return "", false, nil
 	}
 	m, err := r.memReader.ByWorkspaceAndUser(ctx, wid, uid)
 	if err != nil {
-		return "", err
+		if errors.Is(err, domain.ErrNotMember) {
+			return "", false, nil
+		}
+		return "", false, err
 	}
-	return m.Role().String(), nil
+	return m.Role().String(), true, nil
 }
