@@ -151,8 +151,11 @@ services:
       - -s3
       - -s3.port=8333
       - -s3.config=/etc/seaweedfs/s3.json
-      - -master.volumeSizeLimitMB=1024
-      - -volume.max=0
+      # Volume nhỏ (256MB) + nhiều slot cố định: tránh auto-max=diskFree/size ra
+      # quá ít slot (disk local nhỏ) → "no free volumes" khi cấp cho collection
+      # mới. Volume rỗng KHÔNG preallocate nên không tốn disk thật.
+      - -master.volumeSizeLimitMB=256
+      - -volume.max=100
     volumes:
       - seaweedfsdata:/data
       - swconfig:/etc/seaweedfs:ro
@@ -336,6 +339,47 @@ services:
       resources:
         limits:
           memory: 512m
+
+  # ── B4: ILM/SLM snapshot → S3 (doc_v2/03 §4, ADR-021) ──────────────────────
+  # Đường FREE (license Basic): ILM hot/warm/delete + SLM backup logs-* → S3.
+  # searchable_snapshot (cold doc_v2) = Enterprise trả phí → bỏ ở bản free; lộ
+  # trình nâng cấp ghi trong snapshot-init.sh. (Hội đồng 2026-06-28: vote B.)
+  #
+  # Override ES: nạp S3 creds vào keystore (secure settings — KHÔNG để yml/env)
+  # trước khi ES start; endpoint/protocol qua elasticsearch.yml (env dotted).
+  elasticsearch:
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-logmon}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-local-dev-insecure-s3}
+      # endpoint mang scheme (http) — thay s3.client.default.protocol đã deprecated.
+      s3.client.default.endpoint: http://seaweedfs:8333
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        KS=/usr/share/elasticsearch/config/elasticsearch.keystore
+        [ -f "$$KS" ] || elasticsearch-keystore create
+        printf '%s' "$$S3_ACCESS_KEY" | elasticsearch-keystore add -x -f s3.client.default.access_key
+        printf '%s' "$$S3_SECRET_KEY" | elasticsearch-keystore add -x -f s3.client.default.secret_key
+        exec /usr/local/bin/docker-entrypoint.sh eswrapper
+
+  # Đăng ký s3_repo + SLM policy logs-daily + execute 1 snapshot để verify.
+  es-snapshot-init:
+    profiles: [scale]
+    image: curlimages/curl:8.14.1
+    restart: "no"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../elasticsearch:/init:ro
+    entrypoint: /bin/sh
+    command: ["/init/snapshot-init.sh"]
 
 volumes:
   otel-consumer-state:
