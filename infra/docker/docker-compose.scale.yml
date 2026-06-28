@@ -108,5 +108,88 @@ services:
         limits:
           memory: 384m
 
+  # ── B2: SeaweedFS — object store S3-compatible (ADR-021) ───────────────────
+  # 1 process (master+volume+filer+s3) cho object store tí hon. Dùng làm S3
+  # backend cho Thanos blocks (B3) + ES searchable snapshot (B4). Production →
+  # cloud S3/B2; on-prem → SeaweedFS cluster. MinIO loại (ADR-021).
+  #
+  # Sinh s3 identity file từ env (secret KHÔNG hardcode) → seaweedfs bật auth.
+  seaweedfs-config:
+    profiles: [scale]
+    image: busybox:1.37
+    restart: "no"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-logmon}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-local-dev-insecure-s3}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /cfg/s3.json <<EOF
+        {
+          "identities": [
+            {
+              "name": "logmon",
+              "credentials": [
+                { "accessKey": "$${S3_ACCESS_KEY}", "secretKey": "$${S3_SECRET_KEY}" }
+              ],
+              "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+            }
+          ]
+        }
+        EOF
+        echo "wrote /cfg/s3.json (identity: logmon)"
+    volumes:
+      - swconfig:/cfg
+
+  seaweedfs:
+    profiles: [scale]
+    image: chrislusf/seaweedfs:4.36
+    restart: unless-stopped
+    command:
+      - server
+      - -dir=/data
+      - -s3
+      - -s3.port=8333
+      - -s3.config=/etc/seaweedfs/s3.json
+      - -master.volumeSizeLimitMB=1024
+      - -volume.max=0
+    volumes:
+      - seaweedfsdata:/data
+      - swconfig:/etc/seaweedfs:ro
+    ports:
+      - "127.0.0.1:8333:8333" # S3 API
+      - "127.0.0.1:9333:9333" # master UI
+    depends_on:
+      seaweedfs-config:
+        condition: service_completed_successfully
+    healthcheck:
+      # 127.0.0.1 (KHÔNG localhost): wget resolve localhost→[::1] IPv6 nhưng
+      # SeaweedFS bind 127.0.0.1 IPv4 → refused. (gotcha lặp lại từ Phase I.)
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9333/cluster/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # Tạo bucket idempotent qua weed shell (admin path, không cần S3 auth).
+  seaweedfs-init:
+    profiles: [scale]
+    image: chrislusf/seaweedfs:4.36
+    restart: "no"
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        printf 's3.bucket.create -name thanos\ns3.bucket.create -name es-snapshots\ns3.bucket.list\n' \
+          | weed shell -master=seaweedfs:9333
+
 volumes:
   otel-consumer-state:
+  seaweedfsdata:
+  swconfig:
