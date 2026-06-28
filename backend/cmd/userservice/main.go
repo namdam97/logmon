@@ -29,6 +29,7 @@ import (
 	alertinghttp "github.com/namdam97/logmon/backend/internal/alerting/adapters/http"
 	alertingpg "github.com/namdam97/logmon/backend/internal/alerting/adapters/postgres"
 	"github.com/namdam97/logmon/backend/internal/alerting/adapters/promfile"
+	alertingpromk8s "github.com/namdam97/logmon/backend/internal/alerting/adapters/promk8s"
 	"github.com/namdam97/logmon/backend/internal/alerting/adapters/promql"
 	alertingsys "github.com/namdam97/logmon/backend/internal/alerting/adapters/system"
 	"github.com/namdam97/logmon/backend/internal/alerting/app/command"
@@ -66,15 +67,18 @@ import (
 	"github.com/namdam97/logmon/backend/internal/shared/audit"
 	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/crypto"
+	"github.com/namdam97/logmon/backend/internal/shared/health"
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
 	"github.com/namdam97/logmon/backend/internal/shared/middleware"
 	"github.com/namdam97/logmon/backend/internal/shared/outbox"
+	"github.com/namdam97/logmon/backend/internal/shared/promrule"
 	"github.com/namdam97/logmon/backend/internal/shared/tracing"
 	slohttp "github.com/namdam97/logmon/backend/internal/slo/adapters/http"
 	slopg "github.com/namdam97/logmon/backend/internal/slo/adapters/postgres"
 	sloprom "github.com/namdam97/logmon/backend/internal/slo/adapters/prometheus"
 	slopromfile "github.com/namdam97/logmon/backend/internal/slo/adapters/promfile"
+	slopromk8s "github.com/namdam97/logmon/backend/internal/slo/adapters/promk8s"
 	slosys "github.com/namdam97/logmon/backend/internal/slo/adapters/system"
 	slocommand "github.com/namdam97/logmon/backend/internal/slo/app/command"
 	sloquery "github.com/namdam97/logmon/backend/internal/slo/app/query"
@@ -118,9 +122,23 @@ const (
 	_defaultRulesDir    = "/etc/prometheus/generated" // Prometheus mount đọc rule file đã render
 	_defaultPromURL     = "http://prometheus:9090"    // cần --web.enable-lifecycle cho /-/reload
 	_defaultAlertmgrURL = "http://alertmanager:9093"  // proxy silence (GĐ2.4b)
+
+	// Rule sync mode (ADR-024): "file" = render rule file + reload (Compose);
+	// "k8s" = apply PrometheusRule CR (Prometheus Operator, Phase III C3).
+	_ruleSyncFile = "file"
+	_ruleSyncK8s  = "k8s"
+	// Tên PrometheusRule CR sinh ở mode k8s (1 cho alerting, 1 cho slo).
+	_alertingRuleCRName = "logmon-alerting-rules"
+	_sloRuleCRName      = "logmon-slo-rules"
+	_defaultCRNamespace = "logmon"
 )
 
 func main() {
+	// Subcommand healthcheck cho Docker HEALTHCHECK (image distroless không có wget).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthCheck()
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "userservice:", err)
 		os.Exit(1)
@@ -138,6 +156,8 @@ type config struct {
 	authRateBurst  int
 	rulesDir       string
 	promURL        string
+	ruleSyncMode   string
+	ruleCRNS       string
 	alertmgrURL    string
 	webhookToken   string
 	csrfSecret     string
@@ -167,9 +187,13 @@ func loadConfig() config {
 		authRateBurst:  envIntOr("AUTH_RATE_BURST", _authRateBurst),
 		rulesDir:       envOr("RULES_DIR", _defaultRulesDir),
 		promURL:        envOr("PROMETHEUS_URL", _defaultPromURL),
-		alertmgrURL:    envOr("ALERTMANAGER_URL", _defaultAlertmgrURL),
-		webhookToken:   os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN"),
-		csrfSecret:     os.Getenv("CSRF_SECRET"),
+		// RULE_SYNC_MODE=k8s khi chạy trên Kubernetes (apply PrometheusRule CR);
+		// mặc định "file" giữ nguyên hành vi Compose. RULE_CR_NAMESPACE: ns đặt CR.
+		ruleSyncMode: envOr("RULE_SYNC_MODE", _ruleSyncFile),
+		ruleCRNS:     envOr("RULE_CR_NAMESPACE", _defaultCRNamespace),
+		alertmgrURL:  envOr("ALERTMANAGER_URL", _defaultAlertmgrURL),
+		webhookToken: os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN"),
+		csrfSecret:   os.Getenv("CSRF_SECRET"),
 		// OTLP gRPC endpoint (host:port). Rỗng → tracing tắt (dev stack nhẹ).
 		otelEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		otelService:  envOr("OTEL_SERVICE_NAME", _serviceName),
@@ -211,14 +235,20 @@ type alertingDeps struct {
 // outbox; relay (dùng chung) quét outbox và resync rule sang Prometheus qua bus.
 // bus được chia sẻ với các BC khác (SLO) — CHỈ một relay quét outbox để tránh
 // claim chéo event (SKIP LOCKED) làm handler BC kia bỏ lỡ event.
-func buildAlerting(pool *pgxpool.Pool, cfg config, bus *outbox.Bus) alertingDeps {
+func buildAlerting(pool *pgxpool.Pool, cfg config, bus *outbox.Bus, ruleApplier *promrule.Applier) alertingDeps {
 	store := outbox.NewStore(pool)
 	repo := alertingpg.NewRuleRepository(pool)
 	txm := alertingpg.NewTxManager(pool)
 	publisher := alertingpg.NewEventPublisher(pool, store)
 	validator := promql.NewValidator()
 	clock := alertingsys.NewClock()
-	syncer := promfile.NewSyncer(repo, repo, clock, cfg.rulesDir, cfg.promURL)
+	// Mode k8s: apply PrometheusRule CR (Operator nạp); mode file: render + reload.
+	var syncer interface{ Sync(context.Context) error }
+	if ruleApplier != nil {
+		syncer = alertingpromk8s.NewSyncer(repo, repo, clock, ruleApplier, _alertingRuleCRName, cfg.ruleCRNS)
+	} else {
+		syncer = promfile.NewSyncer(repo, repo, clock, cfg.rulesDir, cfg.promURL)
+	}
 
 	ids := alertingsys.NewUUIDGenerator()
 	createRule := command.NewCreateRuleHandler(txm, repo, publisher, validator, ids, clock)
@@ -261,7 +291,7 @@ type sloDeps struct {
 // buildSLO dựng slo BC (GĐ3.1): SLO CRUD ghi event vào outbox; relay dùng chung
 // resync recording + MWMB rules sang Prometheus (file riêng). Budget snapshot job
 // query Prometheus định kỳ ghi slo_snapshots + phát BudgetExhausted.
-func buildSLO(pool *pgxpool.Pool, cfg config, bus *outbox.Bus, log *logger.Logger) sloDeps {
+func buildSLO(pool *pgxpool.Pool, cfg config, bus *outbox.Bus, log *logger.Logger, ruleApplier *promrule.Applier) sloDeps {
 	store := outbox.NewStore(pool)
 	repo := slopg.NewSLORepository(pool)
 	snapRepo := slopg.NewSnapshotRepository(pool)
@@ -269,7 +299,12 @@ func buildSLO(pool *pgxpool.Pool, cfg config, bus *outbox.Bus, log *logger.Logge
 	publisher := slopg.NewEventPublisher(pool, store)
 	clock := slosys.NewClock()
 	ids := slosys.NewUUIDGenerator()
-	syncer := slopromfile.NewSyncer(repo, repo, clock, cfg.rulesDir, cfg.promURL)
+	var syncer interface{ Sync(context.Context) error }
+	if ruleApplier != nil {
+		syncer = slopromk8s.NewSyncer(repo, repo, clock, ruleApplier, _sloRuleCRName, cfg.ruleCRNS)
+	} else {
+		syncer = slopromfile.NewSyncer(repo, repo, clock, cfg.rulesDir, cfg.promURL)
+	}
 
 	createSLO := slocommand.NewCreateSLOHandler(txm, repo, publisher, ids, clock)
 	updateSLO := slocommand.NewUpdateSLOHandler(txm, repo, repo, publisher, clock)
@@ -731,11 +766,22 @@ func run() error {
 		log,
 	)
 
+	// Rule sync mode k8s (Phase III C3): apply PrometheusRule CR thay vì render
+	// file + reload. Applier dùng chung cho alerting + slo (1 in-cluster client).
+	var ruleApplier *promrule.Applier
+	if cfg.ruleSyncMode == _ruleSyncK8s {
+		ruleApplier, err = promrule.NewInClusterApplier()
+		if err != nil {
+			return fmt.Errorf("init rule-sync applier (k8s): %w", err)
+		}
+		log.Infof(ctx, "rule sync mode=k8s (PrometheusRule CR)", "namespace", cfg.ruleCRNS)
+	}
+
 	// Một bus + một relay dùng chung cho mọi BC (alerting + slo) — chỉ một relay
 	// quét outbox để tránh claim chéo event (SKIP LOCKED) làm BC kia bỏ lỡ sync.
 	bus := outbox.NewBus()
-	alerting := buildAlerting(pool, cfg, bus)
-	slo := buildSLO(pool, cfg, bus, log)
+	alerting := buildAlerting(pool, cfg, bus, ruleApplier)
+	slo := buildSLO(pool, cfg, bus, log, ruleApplier)
 
 	// Notification delivery (GĐ3.2): Redis Streams queue + worker. REDIS_ADDR rỗng
 	// → delivery tắt (CRUD kênh vẫn chạy). Đăng ký BC TRƯỚC khi relay.Run để
@@ -915,15 +961,12 @@ func buildRouter(
 		middleware.Logging(log),
 	)
 
-	r.GET("/healthz", func(c *gin.Context) {
-		pingCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		defer cancel()
-		if err := pool.Ping(pingCtx); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	// Liveness: process còn sống (KHÔNG ping dep — tránh restart oan). Readiness:
+	// ping Postgres (dep tới hạn) để LB/K8s ngừng route traffic khi DB chưa sẵn sàng.
+	r.GET("/healthz", health.Liveness())
+	r.GET("/readyz", health.Readiness(2*time.Second,
+		health.Check{Name: "postgres", Ping: pool.Ping},
+	))
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(mx.Registry(), promhttp.HandlerOpts{})))
 
 	api := r.Group("/api/v1")
@@ -985,10 +1028,10 @@ func buildRouter(
 }
 
 // shouldTrace báo otelgin có tạo span cho request không — bỏ qua probe/scrape
-// (/healthz, /metrics) vì chúng tần suất cao và không mang giá trị chẩn đoán.
+// (/healthz, /readyz, /metrics) vì chúng tần suất cao và không mang giá trị chẩn đoán.
 func shouldTrace(c *gin.Context) bool {
 	switch c.Request.URL.Path {
-	case "/healthz", "/metrics":
+	case "/healthz", "/readyz", "/metrics":
 		return false
 	default:
 		return true

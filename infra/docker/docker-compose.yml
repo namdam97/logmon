@@ -12,7 +12,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logmon}
       POSTGRES_DB: logmon
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -70,7 +70,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      # Binary self-check (image distroless không có wget/curl/shell).
+      test: ["CMD", "/app/userservice", "healthcheck"]
       interval: 15s
       timeout: 3s
       retries: 5
@@ -116,7 +117,7 @@ services:
     volumes:
       - genrules:/etc/prometheus/generated
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,7 +141,7 @@ services:
       EXTRA_LATENCY_MS: "200"
       LOG_LEVEL: info
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
     deploy:
       resources:
         limits:
@@ -189,7 +190,7 @@ services:
       - genrules:/etc/prometheus/generated:ro   # rule render bởi alerting BC
       - promdata:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
       interval: 15s
@@ -217,7 +218,7 @@ services:
       - healthchecks_url
       - logmon_webhook_token
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
       interval: 15s
@@ -246,7 +247,7 @@ services:
       - grafanadata:/var/lib/grafana
     ports:
       # 3000 dành cho frontend dev (pnpm dev) — Grafana map ra 3001.
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     depends_on:
       prometheus:
         condition: service_healthy
@@ -271,7 +272,7 @@ services:
     command:
       - --path.rootfs=/host
     ports:
-      - "9100:9100"
+      - "127.0.0.1:9100:9100"
     deploy:
       resources:
         limits:
@@ -284,7 +285,7 @@ services:
     environment:
       DATA_SOURCE_NAME: postgresql://logmon:${POSTGRES_PASSWORD:-logmon}@postgres:5432/logmon?sslmode=disable
     ports:
-      - "9187:9187"
+      - "127.0.0.1:9187:9187"
     depends_on:
       postgres:
         condition: service_healthy
@@ -310,7 +311,7 @@ services:
     volumes:
       - esdata:/usr/share/elasticsearch/data
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -qE '(green|yellow)'"]
       interval: 15s
@@ -386,7 +387,7 @@ services:
     image: jaegertracing/jaeger:2.10.0
     restart: unless-stopped
     ports:
-      - "16686:16686" # Jaeger UI
+      - "127.0.0.1:16686:16686" # Jaeger UI
     deploy:
       resources:
         limits:
@@ -399,7 +400,7 @@ services:
     command:
       - '--es.uri=http://elastic:${ELASTIC_PASSWORD:-local-dev-insecure}@elasticsearch:9200'
     ports:
-      - "9114:9114"
+      - "127.0.0.1:9114:9114"
     depends_on:
       elasticsearch:
         condition: service_healthy

@@ -3,6 +3,12 @@
 # profile `observability`; demo workload sau profile `demo`.
 
 COMPOSE           ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml
+# Production overlay (ADR-040): base + prod + .env.prod (gitignored). Network
+# segmentation + nginx/TLS + frontend. Xem infra/docker/.env.prod.example.
+COMPOSE_PROD      ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml -f $(CURDIR)/infra/docker/docker-compose.prod.yml --env-file $(CURDIR)/infra/docker/.env.prod
+# Mode B overlay (profile scale, ADR-027/011): Kafka buffer + Thanos + SeaweedFS
+# + ILM snapshot. Xem infra/docker/docker-compose.scale.yml.
+COMPOSE_SCALE     ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml -f $(CURDIR)/infra/docker/docker-compose.scale.yml
 POSTGRES_PASSWORD ?= logmon
 # URL trong network compose (service host = postgres) — cho migrate container.
 MIGRATE_DB        := postgres://logmon:$(POSTGRES_PASSWORD)@postgres:5432/logmon?sslmode=disable
@@ -12,7 +18,10 @@ DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmo
 .DEFAULT_GOAL := help
 .PHONY: help doctor hooks up up-full up-demo down down-v logs ps db \
         migrate migrate-down seed dev dev-be dev-fe \
-        test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean
+        test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean \
+        tls-cert prod-up prod-down prod-logs prod-verify prod-backup \
+        scale-up scale-down scale-logs \
+        k8s-up k8s-down k8s-app k8s-monitoring k8s-eck k8s-kafka k8s-otel k8s-thanos k8s-ps k8s-logs
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -48,6 +57,71 @@ down: ## Dừng + xoá container (giữ volume/data)
 
 down-v: ## Dừng + xoá cả volume (reset sạch DB/ES/Grafana)
 	$(COMPOSE) --profile observability --profile demo down -v
+
+# ── Production-like (local hoặc VPS) — Mode A: nginx/TLS + network segmentation ─
+tls-cert: ## Sinh self-signed cert cho HTTPS local (prod dùng Let's Encrypt)
+	./infra/nginx/gen-self-signed.sh $(CN)
+
+prod-up: tls-cert ## Dựng stack production-like (base+prod overlay, cần infra/docker/.env.prod)
+	@test -f infra/docker/.env.prod || { echo "THIẾU infra/docker/.env.prod — copy từ .env.prod.example"; exit 1; }
+	$(COMPOSE_PROD) --profile observability up -d --build
+
+prod-down: ## Dừng stack production-like (giữ volume)
+	$(COMPOSE_PROD) --profile observability down
+
+prod-logs: ## Tail logs prod (make prod-logs ; hoặc S=nginx)
+	$(COMPOSE_PROD) logs -f --tail=100 $(S)
+
+prod-verify: ## Smoke post-deploy (make prod-verify ; hoặc URL=https://domain)
+	./infra/scripts/verify.sh $(URL)
+
+prod-backup: ## Backup Postgres (pg_dump -Fc → ./backups)
+	./infra/scripts/backup.sh
+
+# ── Mode B (production-scale tí hon): Kafka buffer + Thanos + SeaweedFS + ILM ──
+scale-up: ## Dựng stack Mode B (base + scale overlay + observability)
+	OTEL_EXPORTER_OTLP_ENDPOINT=otel-agent:4317 ELASTICSEARCH_URL=http://elasticsearch:9200 \
+	  $(COMPOSE_SCALE) --profile observability --profile scale up -d --build
+
+scale-down: ## Dừng stack Mode B (giữ volume)
+	$(COMPOSE_SCALE) --profile observability --profile scale down
+
+scale-logs: ## Tail logs Mode B (make scale-logs ; hoặc S=kafka)
+	$(COMPOSE_SCALE) --profile observability --profile scale logs -f --tail=100 $(S)
+
+# ── K8s local (k3d) — Phase III: production-like single-node (doc_v2/10 §7) ────
+K8S_DIR ?= $(CURDIR)/infra/k8s
+K8S_NS  ?= logmon
+
+k8s-up: ## Tạo cluster k3d + namespaces (idempotent)
+	$(K8S_DIR)/bootstrap.sh
+
+k8s-down: ## Xoá cluster k3d (mất PVC; dùng `k3d cluster stop logmon` để giữ data)
+	$(K8S_DIR)/teardown.sh
+
+k8s-app: ## Deploy core app lên k8s (PG/Redis/migrate/userservice/frontend/Ingress)
+	$(K8S_DIR)/deploy-app.sh
+
+k8s-monitoring: ## C2: cài kube-prometheus-stack (Prometheus/Alertmanager/Grafana) + ServiceMonitor
+	$(K8S_DIR)/observability/install-monitoring.sh
+
+k8s-eck: ## C4: cài ECK operator + Elasticsearch CR (single-node)
+	$(K8S_DIR)/observability/install-eck.sh
+
+k8s-kafka: ## C5: cài Strimzi operator + Kafka CR (KRaft) + topics
+	$(K8S_DIR)/observability/install-strimzi.sh
+
+k8s-otel: ## C6: deploy OTel logs pipeline (agent DaemonSet + gateway + consumer)
+	$(K8S_DIR)/observability/install-otel.sh
+
+k8s-thanos: ## C7: SeaweedFS (S3) + Thanos sidecar/store/query/compactor
+	$(K8S_DIR)/observability/install-thanos.sh
+
+k8s-ps: ## Trạng thái pods mọi namespace LogMon
+	kubectl get pods -n $(K8S_NS) -o wide; kubectl get pods -n observability -o wide 2>/dev/null || true
+
+k8s-logs: ## Tail logs 1 deployment k8s (make k8s-logs S=userservice)
+	kubectl logs -n $(K8S_NS) -f --tail=100 deploy/$(S)
 
 logs: ## Tail logs (make logs ; hoặc make logs S=userservice)
 	$(COMPOSE) logs -f --tail=100 $(S)

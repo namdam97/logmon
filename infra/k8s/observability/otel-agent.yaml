@@ -1,0 +1,104 @@
+# OTel AGENT (DaemonSet) — Phase III C6. Mỗi node 1 pod: đọc log container k8s
+# (/var/log/pods), parse CRI/containerd qua operator `container`, gắn k8s.* metadata
+# (k8sattributes) → đẩy OTLP sang gateway. runAsUser 0 để đọc log root-owned.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-agent-config
+  namespace: observability
+  labels: { app.kubernetes.io/part-of: logmon }
+data:
+  agent.yaml: |
+    receivers:
+      filelog:
+        include: [/var/log/pods/*/*/*.log]
+        # KHÔNG đọc log của chính OTel (tránh feedback loop).
+        exclude:
+          - /var/log/pods/observability_otel-*/*/*.log
+        include_file_path: true
+        start_at: end
+        operators:
+          # `container` tự nhận diện CRI/containerd/docker + tách k8s metadata từ path.
+          - type: container
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 192
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.deployment.name
+            - k8s.node.name
+        pod_association:
+          - sources:
+              - { from: resource_attribute, name: k8s.pod.name }
+              - { from: resource_attribute, name: k8s.namespace.name }
+      # service.name = deployment (hoặc pod) để gateway map data_stream.dataset.
+      transform/servicename:
+        error_mode: ignore
+        log_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.name"], attributes["k8s.deployment.name"]) where attributes["k8s.deployment.name"] != nil
+              - set(attributes["service.name"], attributes["k8s.pod.name"]) where attributes["service.name"] == nil
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+    exporters:
+      otlp:
+        endpoint: otel-gateway:4317
+        tls: { insecure: true }
+        retry_on_failure: { enabled: true }
+    service:
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus: { host: 0.0.0.0, port: 8888 }
+      pipelines:
+        logs:
+          receivers: [filelog]
+          processors: [memory_limiter, k8sattributes, transform/servicename, batch]
+          exporters: [otlp]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-agent
+  namespace: observability
+  labels: { app.kubernetes.io/name: otel-agent, app.kubernetes.io/part-of: logmon }
+spec:
+  selector:
+    matchLabels: { app.kubernetes.io/name: otel-agent }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: otel-agent, app.kubernetes.io/part-of: logmon }
+    spec:
+      serviceAccountName: otel-agent
+      securityContext:
+        runAsUser: 0            # đọc /var/log/pods (root-owned)
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.154.0
+          args: ["--config=/etc/otelcol/agent.yaml"]
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          ports:
+            - { name: metrics, containerPort: 8888 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol }
+            - { name: varlogpods, mountPath: /var/log/pods, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: otel-agent-config }
+        - name: varlogpods
+          hostPath: { path: /var/log/pods }

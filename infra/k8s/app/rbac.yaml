@@ -1,0 +1,35 @@
+# RBAC cho userservice apply PrometheusRule CR (Phase III C3, RULE_SYNC_MODE=k8s).
+# Quyền tối thiểu: chỉ prometheusrules trong namespace logmon (KHÔNG cluster-wide).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: userservice
+  namespace: logmon
+  labels: { app.kubernetes.io/name: userservice, app.kubernetes.io/part-of: logmon }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: userservice-rule-syncer
+  namespace: logmon
+  labels: { app.kubernetes.io/part-of: logmon }
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheusrules"]
+    # server-side apply cần get + patch + create; list/watch để reconcile an toàn.
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: userservice-rule-syncer
+  namespace: logmon
+  labels: { app.kubernetes.io/part-of: logmon }
+subjects:
+  - kind: ServiceAccount
+    name: userservice
+    namespace: logmon
+roleRef:
+  kind: Role
+  name: userservice-rule-syncer
+  apiGroup: rbac.authorization.k8s.io

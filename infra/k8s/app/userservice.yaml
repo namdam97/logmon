@@ -1,0 +1,61 @@
+# LogMon API (userservice) — Phase III C1. Deployment (stateless) + Service.
+# Image build local + `k3d image import` (deploy-app.sh); imagePullPolicy Never
+# để dùng image trong cluster, KHÔNG kéo từ registry.
+# env: ConfigMap (non-secret) + Secret (DATABASE_URL/JWT_SECRET/…).
+# RULES_DIR là emptyDir ở C1 (Prometheus chưa đọc); C3 đổi sang sinh PrometheusRule CR.
+apiVersion: v1
+kind: Service
+metadata:
+  name: userservice
+  namespace: logmon
+  labels: { app.kubernetes.io/name: userservice, app.kubernetes.io/part-of: logmon }
+spec:
+  selector: { app.kubernetes.io/name: userservice }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: userservice
+  namespace: logmon
+  labels: { app.kubernetes.io/name: userservice, app.kubernetes.io/part-of: logmon }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: userservice }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: userservice, app.kubernetes.io/part-of: logmon }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: userservice   # quyền apply PrometheusRule (rbac.yaml)
+      containers:
+        - name: userservice
+          image: logmon/userservice:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: logmon-config }
+            - secretRef: { name: logmon-secrets }
+          # /healthz luôn 200 (liveness); /readyz ping Postgres (readiness).
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: genrules, mountPath: /etc/prometheus/generated }
+      volumes:
+        - name: genrules
+          emptyDir: {}

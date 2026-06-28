@@ -1,0 +1,29 @@
+# Ingress (Traefik, k3s built-in) — Phase III C1. Entrypoint công khai duy nhất.
+# /api → userservice (same-origin cho CSRF, như nginx Mode A); / → frontend.
+# Host logmon.local: thêm `127.0.0.1 logmon.local` vào /etc/hosts, hoặc test bằng
+# `curl -H 'Host: logmon.local' http://127.0.0.1:8088/...`.
+# pathType Prefix + thứ tự: Traefik match path cụ thể (/api) trước catch-all (/).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: logmon
+  namespace: logmon
+  labels: { app.kubernetes.io/part-of: logmon }
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: logmon.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: userservice
+                port: { number: 8080 }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port: { number: 3000 }

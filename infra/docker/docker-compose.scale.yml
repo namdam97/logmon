@@ -1,0 +1,390 @@
+# LogMon — overlay Mode B (profile `scale`, ADR-027/018/011/019/021).
+# Bật bộ công cụ production lõi ở quy mô tí hon (staging 1-node, RF=1):
+#   B1 Kafka buffer    — agent→gateway→Kafka(otlp_logs)→consumer→ES (file này)
+#   B2 SeaweedFS (S3)  — object store cho Thanos + ES snapshot
+#   B3 Thanos          — long-term metrics (sidecar/store/query/compactor)
+#   B4 ILM cold        — searchable_snapshot → SeaweedFS
+#
+# Dùng cùng base + observability profile:
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#     --profile observability --profile scale up -d
+# (hoặc `make scale-up`). Mode A (base) KHÔNG đổi — overlay chỉ override
+# otel-gateway sang đẩy Kafka thay vì ghi thẳng ES.
+
+services:
+  # ── B1: Kafka 4.3 KRaft-only, 1 node combined (broker+controller) ──────────
+  # Production doc_v2/03 §5 = 3 nodes RF=3; bản tí hon = 1 node combined RF=1
+  # (staging, chấp nhận rủi ro). Kafka ở đây là BUFFER ephemeral (otlp_logs
+  # retention 24h) — KHÔNG phải system-of-record → không cần volume bền.
+  kafka:
+    profiles: [scale]
+    image: apache/kafka:4.3.1
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # RF=1 cho mọi internal topic (1 node).
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_NUM_PARTITIONS: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # CLUSTER_ID cố định → format storage xác định (ephemeral nên mỗi up là mới).
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    ports:
+      - "127.0.0.1:9092:9092"
+    healthcheck:
+      # kafka-topics.sh cold-start JVM ~6s mỗi lần → timeout phải > 6s.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "1.0"
+
+  # Tạo topic idempotent (doc_v2/03 §5): otlp_logs (input, 6 part, retention 24h)
+  # + logs-dlq (DLQ, retention 14d). one-shot khi up.
+  kafka-init:
+    profiles: [scale]
+    image: apache/kafka:4.3.1
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        B=kafka:9092
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server $$B --create --if-not-exists \
+          --topic otlp_logs --partitions 6 --replication-factor 1 \
+          --config retention.ms=86400000
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server $$B --create --if-not-exists \
+          --topic logs-dlq --partitions 1 --replication-factor 1 \
+          --config retention.ms=1209600000
+        echo "topics:" && /opt/kafka/bin/kafka-topics.sh --bootstrap-server $$B --list
+
+  # Override Mode A gateway: logs → Kafka thay vì ghi thẳng ES. Mount thêm config
+  # scale + đổi command (volumes append, command replace). depends_on thêm kafka.
+  otel-gateway:
+    command: ["--config=/etc/otelcol/gateway-scale.yaml"]
+    volumes:
+      - ../otel/gateway-scale.yaml:/etc/otelcol/gateway-scale.yaml:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # Consumer: Kafka otlp_logs → ES (consumer group otel-gateway).
+  otel-consumer:
+    profiles: [scale]
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    restart: unless-stopped
+    user: "0"
+    command: ["--config=/etc/otelcol/consumer.yaml"]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../otel/consumer.yaml:/etc/otelcol/consumer.yaml:ro
+      - otel-consumer-state:/var/lib/otelcol
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+
+  # ── B2: SeaweedFS — object store S3-compatible (ADR-021) ───────────────────
+  # 1 process (master+volume+filer+s3) cho object store tí hon. Dùng làm S3
+  # backend cho Thanos blocks (B3) + ES searchable snapshot (B4). Production →
+  # cloud S3/B2; on-prem → SeaweedFS cluster. MinIO loại (ADR-021).
+  #
+  # Sinh s3 identity file từ env (secret KHÔNG hardcode) → seaweedfs bật auth.
+  seaweedfs-config:
+    profiles: [scale]
+    image: busybox:1.37
+    restart: "no"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-logmon}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-local-dev-insecure-s3}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /cfg/s3.json <<EOF
+        {
+          "identities": [
+            {
+              "name": "logmon",
+              "credentials": [
+                { "accessKey": "$${S3_ACCESS_KEY}", "secretKey": "$${S3_SECRET_KEY}" }
+              ],
+              "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+            }
+          ]
+        }
+        EOF
+        echo "wrote /cfg/s3.json (identity: logmon)"
+    volumes:
+      - swconfig:/cfg
+
+  seaweedfs:
+    profiles: [scale]
+    image: chrislusf/seaweedfs:4.36
+    restart: unless-stopped
+    command:
+      - server
+      - -dir=/data
+      - -s3
+      - -s3.port=8333
+      - -s3.config=/etc/seaweedfs/s3.json
+      # Volume nhỏ (256MB) + nhiều slot cố định: tránh auto-max=diskFree/size ra
+      # quá ít slot (disk local nhỏ) → "no free volumes" khi cấp cho collection
+      # mới. Volume rỗng KHÔNG preallocate nên không tốn disk thật.
+      - -master.volumeSizeLimitMB=256
+      - -volume.max=100
+    volumes:
+      - seaweedfsdata:/data
+      - swconfig:/etc/seaweedfs:ro
+    ports:
+      - "127.0.0.1:8333:8333" # S3 API
+      - "127.0.0.1:9333:9333" # master UI
+    depends_on:
+      seaweedfs-config:
+        condition: service_completed_successfully
+    healthcheck:
+      # 127.0.0.1 (KHÔNG localhost): wget resolve localhost→[::1] IPv6 nhưng
+      # SeaweedFS bind 127.0.0.1 IPv4 → refused. (gotcha lặp lại từ Phase I.)
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9333/cluster/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # Tạo bucket idempotent qua weed shell (admin path, không cần S3 auth).
+  seaweedfs-init:
+    profiles: [scale]
+    image: chrislusf/seaweedfs:4.36
+    restart: "no"
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        printf 's3.bucket.create -name thanos\ns3.bucket.create -name es-snapshots\ns3.bucket.list\n' \
+          | weed shell -master=seaweedfs:9333
+
+  # ── B3: Thanos — long-term metrics (ADR-011, doc_v2/04 §1.4) ───────────────
+  # Sidecar upload TSDB block 2h → S3; Store đọc block lịch sử; Query gộp
+  # sidecar+store (dedup theo replica) phục vụ PromQL cho Grafana; Compactor
+  # (single replica) dedup + downsample raw→5m→1h.
+  #
+  # objstore.yml sinh từ env (secret KHÔNG hardcode) → mọi thành phần Thanos
+  # đọc chung qua volume thanoscfg.
+  thanos-config:
+    profiles: [scale]
+    image: busybox:1.37
+    restart: "no"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-logmon}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-local-dev-insecure-s3}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /cfg/objstore.yml <<EOF
+        type: S3
+        config:
+          bucket: thanos
+          endpoint: seaweedfs:8333
+          access_key: "$${S3_ACCESS_KEY}"
+          secret_key: "$${S3_SECRET_KEY}"
+          insecure: true
+        EOF
+        echo "wrote /cfg/objstore.yml (bucket thanos @ seaweedfs:8333)"
+    volumes:
+      - thanoscfg:/cfg
+
+  # Override Prometheus: bật block 2h cố định để sidecar/compactor quản nén
+  # (best practice Thanos). command REPLACE → phải nêu lại đủ flag base.
+  prometheus:
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # PHẢI nêu lại path: override command bỏ mất default của image
+      # (--storage.tsdb.path=/prometheus) → sidecar không thấy /prometheus/wal.
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --enable-feature=exemplar-storage
+      - --storage.tsdb.min-block-duration=2h
+      - --storage.tsdb.max-block-duration=2h
+
+  thanos-sidecar:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    # rw + root: shipper ghi /prometheus/thanos.shipper.json (track block đã
+    # upload) — KHÔNG đụng tsdb của Prometheus, chỉ file meta riêng của sidecar.
+    user: "0"
+    command:
+      - sidecar
+      - --tsdb.path=/prometheus
+      - --prometheus.url=http://prometheus:9090
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --http-address=0.0.0.0:10902
+      - --grpc-address=0.0.0.0:10901
+    volumes:
+      - promdata:/prometheus
+      - thanoscfg:/etc/thanos:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      thanos-config:
+        condition: service_completed_successfully
+      seaweedfs:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  thanos-store:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    # root để ghi named volume /data (thanos image chạy non-root); như otel-*.
+    user: "0"
+    command:
+      - store
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --data-dir=/data
+      - --http-address=0.0.0.0:10902
+      - --grpc-address=0.0.0.0:10901
+    volumes:
+      - thanoscfg:/etc/thanos:ro
+      - thanos-store-data:/data
+    depends_on:
+      thanos-config:
+        condition: service_completed_successfully
+      seaweedfs:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  thanos-query:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    command:
+      - query
+      - --http-address=0.0.0.0:10902
+      - --grpc-address=0.0.0.0:10901
+      - --endpoint=thanos-sidecar:10901
+      - --endpoint=thanos-store:10901
+      - --query.replica-label=replica
+    ports:
+      - "127.0.0.1:10902:10902" # Thanos Query UI/API (Grafana datasource Mode B)
+    depends_on:
+      - thanos-sidecar
+      - thanos-store
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # Compactor PHẢI single replica (doc_v2/04 §1.4). --wait = chạy liên tục.
+  thanos-compactor:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    # root để ghi named volume /data (thanos image chạy non-root).
+    user: "0"
+    command:
+      - compact
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --data-dir=/data
+      - --http-address=0.0.0.0:10902
+      - --wait
+      - --retention.resolution-raw=30d
+      - --retention.resolution-5m=90d
+      - --retention.resolution-1h=1y
+    volumes:
+      - thanoscfg:/etc/thanos:ro
+      - thanos-compact-data:/data
+    depends_on:
+      thanos-config:
+        condition: service_completed_successfully
+      seaweedfs:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ── B4: ILM/SLM snapshot → S3 (doc_v2/03 §4, ADR-021) ──────────────────────
+  # Đường FREE (license Basic): ILM hot/warm/delete + SLM backup logs-* → S3.
+  # searchable_snapshot (cold doc_v2) = Enterprise trả phí → bỏ ở bản free; lộ
+  # trình nâng cấp ghi trong snapshot-init.sh. (Hội đồng 2026-06-28: vote B.)
+  #
+  # Override ES: nạp S3 creds vào keystore (secure settings — KHÔNG để yml/env)
+  # trước khi ES start; endpoint/protocol qua elasticsearch.yml (env dotted).
+  elasticsearch:
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-logmon}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-local-dev-insecure-s3}
+      # endpoint mang scheme (http) — thay s3.client.default.protocol đã deprecated.
+      s3.client.default.endpoint: http://seaweedfs:8333
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        KS=/usr/share/elasticsearch/config/elasticsearch.keystore
+        [ -f "$$KS" ] || elasticsearch-keystore create
+        printf '%s' "$$S3_ACCESS_KEY" | elasticsearch-keystore add -x -f s3.client.default.access_key
+        printf '%s' "$$S3_SECRET_KEY" | elasticsearch-keystore add -x -f s3.client.default.secret_key
+        exec /usr/local/bin/docker-entrypoint.sh eswrapper
+
+  # Đăng ký s3_repo + SLM policy logs-daily + execute 1 snapshot để verify.
+  es-snapshot-init:
+    profiles: [scale]
+    image: curlimages/curl:8.14.1
+    restart: "no"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-local-dev-insecure}
+    volumes:
+      - ../elasticsearch:/init:ro
+    entrypoint: /bin/sh
+    command: ["/init/snapshot-init.sh"]
+
+volumes:
+  otel-consumer-state:
+  seaweedfsdata:
+  swconfig:
+  thanoscfg:
+  thanos-store-data:
+  thanos-compact-data:

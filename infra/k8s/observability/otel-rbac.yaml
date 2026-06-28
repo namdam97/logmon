@@ -1,0 +1,35 @@
+# RBAC cho OTel agent (DaemonSet) — Phase III C6. k8sattributes processor cần
+# đọc pod/namespace/replicaset cluster-wide để gắn k8s.* metadata vào log.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-agent
+  namespace: observability
+  labels: { app.kubernetes.io/part-of: logmon }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: logmon-otel-agent
+  labels: { app.kubernetes.io/part-of: logmon }
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: logmon-otel-agent
+  labels: { app.kubernetes.io/part-of: logmon }
+subjects:
+  - kind: ServiceAccount
+    name: otel-agent
+    namespace: observability
+roleRef:
+  kind: ClusterRole
+  name: logmon-otel-agent
+  apiGroup: rbac.authorization.k8s.io

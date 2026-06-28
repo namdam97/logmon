@@ -1,0 +1,140 @@
+# Thanos store/query/compactor — Phase III C7 (ADR-011, doc_v2/04 §1.4).
+# Sidecar bật qua kube-prometheus-stack values (upload TSDB → SeaweedFS + StoreAPI).
+# - store: đọc block lịch sử từ S3.  - query: fan-out sidecar + store, dedup replica.
+# - compactor: downsample/compact (1 replica duy nhất). objstore.yml ở secret thanos-objstore.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-store
+  namespace: observability
+  labels: { app.kubernetes.io/name: thanos-store, app.kubernetes.io/part-of: logmon }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: thanos-store }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: thanos-store, app.kubernetes.io/part-of: logmon }
+    spec:
+      containers:
+        - name: thanos
+          image: quay.io/thanos/thanos:v0.41.0
+          args:
+            - store
+            - --objstore.config-file=/etc/thanos/objstore.yml
+            - --data-dir=/var/thanos/store
+            - --http-address=0.0.0.0:10902
+            - --grpc-address=0.0.0.0:10901
+          ports:
+            - { name: grpc, containerPort: 10901 }
+            - { name: http, containerPort: 10902 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: objstore, mountPath: /etc/thanos, readOnly: true }
+            - { name: data, mountPath: /var/thanos/store }
+      volumes:
+        - name: objstore
+          secret: { secretName: thanos-objstore }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-store
+  namespace: observability
+  labels: { app.kubernetes.io/name: thanos-store, app.kubernetes.io/part-of: logmon }
+spec:
+  selector: { app.kubernetes.io/name: thanos-store }
+  ports:
+    - { name: grpc, port: 10901, targetPort: 10901 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-query
+  namespace: observability
+  labels: { app.kubernetes.io/name: thanos-query, app.kubernetes.io/part-of: logmon }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: thanos-query }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: thanos-query, app.kubernetes.io/part-of: logmon }
+    spec:
+      containers:
+        - name: thanos
+          image: quay.io/thanos/thanos:v0.41.0
+          args:
+            - query
+            - --http-address=0.0.0.0:10902
+            - --grpc-address=0.0.0.0:10901
+            # dedup theo replica label kube-prom gắn (prometheus_replica).
+            - --query.replica-label=prometheus_replica
+            # sidecar StoreAPI qua headless service prometheus-operated (port grpc).
+            - --endpoint=dnssrv+_grpc._tcp.prometheus-operated.observability.svc.cluster.local
+            - --endpoint=thanos-store.observability.svc.cluster.local:10901
+          ports:
+            - { name: http, containerPort: 10902 }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 10902 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-query
+  namespace: observability
+  labels: { app.kubernetes.io/name: thanos-query, app.kubernetes.io/part-of: logmon }
+spec:
+  selector: { app.kubernetes.io/name: thanos-query }
+  ports:
+    - { name: http, port: 10902, targetPort: 10902 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-compactor
+  namespace: observability
+  labels: { app.kubernetes.io/name: thanos-compactor, app.kubernetes.io/part-of: logmon }
+spec:
+  replicas: 1                       # PHẢI 1 (compactor không chạy song song)
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: thanos-compactor }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: thanos-compactor, app.kubernetes.io/part-of: logmon }
+    spec:
+      containers:
+        - name: thanos
+          image: quay.io/thanos/thanos:v0.41.0
+          args:
+            - compact
+            - --objstore.config-file=/etc/thanos/objstore.yml
+            - --data-dir=/var/thanos/compact
+            - --http-address=0.0.0.0:10902
+            - --wait
+            - --retention.resolution-raw=30d
+            - --retention.resolution-5m=90d
+            - --retention.resolution-1h=180d
+          ports:
+            - { name: http, containerPort: 10902 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: objstore, mountPath: /etc/thanos, readOnly: true }
+            - { name: data, mountPath: /var/thanos/compact }
+      volumes:
+        - name: objstore
+          secret: { secretName: thanos-objstore }
+        - name: data
+          emptyDir: {}
