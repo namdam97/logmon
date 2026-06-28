@@ -20,7 +20,8 @@ DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmo
         migrate migrate-down seed dev dev-be dev-fe \
         test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean \
         tls-cert prod-up prod-down prod-logs prod-verify prod-backup \
-        scale-up scale-down scale-logs
+        scale-up scale-down scale-logs \
+        k8s-up k8s-down k8s-app k8s-ps k8s-logs
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -87,6 +88,25 @@ scale-down: ## Dừng stack Mode B (giữ volume)
 
 scale-logs: ## Tail logs Mode B (make scale-logs ; hoặc S=kafka)
 	$(COMPOSE_SCALE) --profile observability --profile scale logs -f --tail=100 $(S)
+
+# ── K8s local (k3d) — Phase III: production-like single-node (doc_v2/10 §7) ────
+K8S_DIR ?= $(CURDIR)/infra/k8s
+K8S_NS  ?= logmon
+
+k8s-up: ## Tạo cluster k3d + namespaces (idempotent)
+	$(K8S_DIR)/bootstrap.sh
+
+k8s-down: ## Xoá cluster k3d (mất PVC; dùng `k3d cluster stop logmon` để giữ data)
+	$(K8S_DIR)/teardown.sh
+
+k8s-app: ## Deploy core app lên k8s (PG/Redis/migrate/userservice/frontend/Ingress)
+	$(K8S_DIR)/deploy-app.sh
+
+k8s-ps: ## Trạng thái pods mọi namespace LogMon
+	kubectl get pods -n $(K8S_NS) -o wide; kubectl get pods -n observability -o wide 2>/dev/null || true
+
+k8s-logs: ## Tail logs 1 deployment k8s (make k8s-logs S=userservice)
+	kubectl logs -n $(K8S_NS) -f --tail=100 deploy/$(S)
 
 logs: ## Tail logs (make logs ; hoặc make logs S=userservice)
 	$(COMPOSE) logs -f --tail=100 $(S)

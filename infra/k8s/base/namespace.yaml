@@ -1,0 +1,18 @@
+# Namespaces LogMon trên K8s (Phase III, doc_v2/10 §7).
+#   logmon        — app + stateful deps (PG/Redis) + Kafka/ES (operator-managed CR)
+#   observability — kube-prometheus-stack, Thanos, OTel gateway
+# Tách namespace để RBAC/NetworkPolicy/quota theo nhóm; OTel agent là DaemonSet
+# nằm ở observability nhưng scrape mọi namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logmon
+  labels:
+    app.kubernetes.io/part-of: logmon
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/part-of: logmon
