@@ -1,0 +1,82 @@
+# OTel CONSUMER (Deployment) — Phase III C6, Mode B trên k8s. Đọc Kafka otlp_logs
+# → Elasticsearch data streams. ES password lấy từ secret ECK (logmon-es-elastic-user).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-consumer-config
+  namespace: observability
+  labels: { app.kubernetes.io/part-of: logmon }
+data:
+  consumer.yaml: |
+    extensions:
+      file_storage:
+        directory: /var/lib/otelcol
+    receivers:
+      kafka:
+        brokers: [logmon-kafka-bootstrap:9092]
+        logs:
+          encoding: otlp_proto
+        group_id: otel-gateway
+        initial_offset: latest
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 256
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+    exporters:
+      elasticsearch:
+        endpoints: ["http://logmon-es-http:9200"]
+        user: elastic
+        password: ${env:ELASTIC_PASSWORD}
+        retry: { enabled: true }
+        sending_queue: { enabled: true, storage: file_storage }
+    service:
+      extensions: [file_storage]
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus: { host: 0.0.0.0, port: 8888 }
+      pipelines:
+        logs:
+          receivers: [kafka]
+          processors: [memory_limiter, batch]
+          exporters: [elasticsearch]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-consumer
+  namespace: observability
+  labels: { app.kubernetes.io/name: otel-consumer, app.kubernetes.io/part-of: logmon }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: otel-consumer }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: otel-consumer, app.kubernetes.io/part-of: logmon }
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.154.0
+          args: ["--config=/etc/otelcol/consumer.yaml"]
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom: { secretKeyRef: { name: logmon-es-elastic-user, key: elastic } }
+          ports:
+            - { name: metrics, containerPort: 8888 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol }
+            - { name: state, mountPath: /var/lib/otelcol }
+      volumes:
+        - name: config
+          configMap: { name: otel-consumer-config }
+        - name: state
+          emptyDir: {}

@@ -1,0 +1,96 @@
+# OTel GATEWAY (Deployment) — Phase III C6, Mode B trên k8s (ADR-018/027).
+# Nhận OTLP từ agent → transform data_stream.* → đẩy Kafka topic otlp_logs.
+# Traces/Jaeger hoãn (Jaeger chưa deploy trên k8s) → C6 chỉ pipeline logs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-gateway-config
+  namespace: observability
+  labels: { app.kubernetes.io/part-of: logmon }
+data:
+  gateway.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 384
+      transform/datastream:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - set(attributes["data_stream.type"], "logs")
+              - set(attributes["data_stream.dataset"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil
+              - set(attributes["data_stream.dataset"], "k8s") where attributes["data_stream.dataset"] == nil
+              - set(attributes["data_stream.namespace"], "default")
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+    exporters:
+      kafka:
+        brokers: [logmon-kafka-bootstrap:9092]
+        logs:
+          topic: otlp_logs
+          encoding: otlp_proto
+        producer:
+          compression: gzip
+        retry_on_failure:
+          enabled: true
+    service:
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus: { host: 0.0.0.0, port: 8888 }
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/datastream, batch]
+          exporters: [kafka]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway
+  namespace: observability
+  labels: { app.kubernetes.io/name: otel-gateway, app.kubernetes.io/part-of: logmon }
+spec:
+  selector: { app.kubernetes.io/name: otel-gateway }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: metrics, port: 8888, targetPort: 8888 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-gateway
+  namespace: observability
+  labels: { app.kubernetes.io/name: otel-gateway, app.kubernetes.io/part-of: logmon }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: otel-gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: otel-gateway, app.kubernetes.io/part-of: logmon }
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.154.0
+          args: ["--config=/etc/otelcol/gateway.yaml"]
+          ports:
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: metrics, containerPort: 8888 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol }
+      volumes:
+        - name: config
+          configMap: { name: otel-gateway-config }

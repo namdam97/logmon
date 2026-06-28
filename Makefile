@@ -21,7 +21,7 @@ DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmo
         test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean \
         tls-cert prod-up prod-down prod-logs prod-verify prod-backup \
         scale-up scale-down scale-logs \
-        k8s-up k8s-down k8s-app k8s-monitoring k8s-eck k8s-kafka k8s-ps k8s-logs
+        k8s-up k8s-down k8s-app k8s-monitoring k8s-eck k8s-kafka k8s-otel k8s-ps k8s-logs
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -110,6 +110,9 @@ k8s-eck: ## C4: cài ECK operator + Elasticsearch CR (single-node)
 
 k8s-kafka: ## C5: cài Strimzi operator + Kafka CR (KRaft) + topics
 	$(K8S_DIR)/observability/install-strimzi.sh
+
+k8s-otel: ## C6: deploy OTel logs pipeline (agent DaemonSet + gateway + consumer)
+	$(K8S_DIR)/observability/install-otel.sh
 
 k8s-ps: ## Trạng thái pods mọi namespace LogMon
 	kubectl get pods -n $(K8S_NS) -o wide; kubectl get pods -n observability -o wide 2>/dev/null || true
