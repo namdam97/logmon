@@ -1,6 +1,12 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # external_labels cần cho Thanos (Mode B): dedup theo `replica`, global view
+  # theo `cluster`. Mode A: chỉ gắn vào alert gửi Alertmanager — query local
+  # không đổi, recording rule không đổi.
+  external_labels:
+    cluster: logmon
+    replica: A
 
 rule_files:
   - /etc/prometheus/rules/*.yml

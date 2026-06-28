@@ -189,7 +189,158 @@ services:
         printf 's3.bucket.create -name thanos\ns3.bucket.create -name es-snapshots\ns3.bucket.list\n' \
           | weed shell -master=seaweedfs:9333
 
+  # ── B3: Thanos — long-term metrics (ADR-011, doc_v2/04 §1.4) ───────────────
+  # Sidecar upload TSDB block 2h → S3; Store đọc block lịch sử; Query gộp
+  # sidecar+store (dedup theo replica) phục vụ PromQL cho Grafana; Compactor
+  # (single replica) dedup + downsample raw→5m→1h.
+  #
+  # objstore.yml sinh từ env (secret KHÔNG hardcode) → mọi thành phần Thanos
+  # đọc chung qua volume thanoscfg.
+  thanos-config:
+    profiles: [scale]
+    image: busybox:1.37
+    restart: "no"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-logmon}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-local-dev-insecure-s3}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /cfg/objstore.yml <<EOF
+        type: S3
+        config:
+          bucket: thanos
+          endpoint: seaweedfs:8333
+          access_key: "$${S3_ACCESS_KEY}"
+          secret_key: "$${S3_SECRET_KEY}"
+          insecure: true
+        EOF
+        echo "wrote /cfg/objstore.yml (bucket thanos @ seaweedfs:8333)"
+    volumes:
+      - thanoscfg:/cfg
+
+  # Override Prometheus: bật block 2h cố định để sidecar/compactor quản nén
+  # (best practice Thanos). command REPLACE → phải nêu lại đủ flag base.
+  prometheus:
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # PHẢI nêu lại path: override command bỏ mất default của image
+      # (--storage.tsdb.path=/prometheus) → sidecar không thấy /prometheus/wal.
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --enable-feature=exemplar-storage
+      - --storage.tsdb.min-block-duration=2h
+      - --storage.tsdb.max-block-duration=2h
+
+  thanos-sidecar:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    # rw + root: shipper ghi /prometheus/thanos.shipper.json (track block đã
+    # upload) — KHÔNG đụng tsdb của Prometheus, chỉ file meta riêng của sidecar.
+    user: "0"
+    command:
+      - sidecar
+      - --tsdb.path=/prometheus
+      - --prometheus.url=http://prometheus:9090
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --http-address=0.0.0.0:10902
+      - --grpc-address=0.0.0.0:10901
+    volumes:
+      - promdata:/prometheus
+      - thanoscfg:/etc/thanos:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      thanos-config:
+        condition: service_completed_successfully
+      seaweedfs:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  thanos-store:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    # root để ghi named volume /data (thanos image chạy non-root); như otel-*.
+    user: "0"
+    command:
+      - store
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --data-dir=/data
+      - --http-address=0.0.0.0:10902
+      - --grpc-address=0.0.0.0:10901
+    volumes:
+      - thanoscfg:/etc/thanos:ro
+      - thanos-store-data:/data
+    depends_on:
+      thanos-config:
+        condition: service_completed_successfully
+      seaweedfs:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  thanos-query:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    command:
+      - query
+      - --http-address=0.0.0.0:10902
+      - --grpc-address=0.0.0.0:10901
+      - --endpoint=thanos-sidecar:10901
+      - --endpoint=thanos-store:10901
+      - --query.replica-label=replica
+    ports:
+      - "127.0.0.1:10902:10902" # Thanos Query UI/API (Grafana datasource Mode B)
+    depends_on:
+      - thanos-sidecar
+      - thanos-store
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # Compactor PHẢI single replica (doc_v2/04 §1.4). --wait = chạy liên tục.
+  thanos-compactor:
+    profiles: [scale]
+    image: quay.io/thanos/thanos:v0.41.0
+    restart: unless-stopped
+    # root để ghi named volume /data (thanos image chạy non-root).
+    user: "0"
+    command:
+      - compact
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --data-dir=/data
+      - --http-address=0.0.0.0:10902
+      - --wait
+      - --retention.resolution-raw=30d
+      - --retention.resolution-5m=90d
+      - --retention.resolution-1h=1y
+    volumes:
+      - thanoscfg:/etc/thanos:ro
+      - thanos-compact-data:/data
+    depends_on:
+      thanos-config:
+        condition: service_completed_successfully
+      seaweedfs:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
 volumes:
   otel-consumer-state:
   seaweedfsdata:
   swconfig:
+  thanoscfg:
+  thanos-store-data:
+  thanos-compact-data:
