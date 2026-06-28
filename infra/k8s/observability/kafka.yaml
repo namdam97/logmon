@@ -1,0 +1,83 @@
+# Kafka (Strimzi, KRaft) — Phase III C5, thay container Kafka Mode B (ADR-027).
+# KRaft-only (annotation kraft:enabled + node-pools:enabled). 1 node combined
+# (controller+broker) RF=1 — staging tí hon, accepted risk như Mode B.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: combined
+  namespace: observability
+  labels:
+    strimzi.io/cluster: logmon   # gắn pool vào Kafka cluster `logmon`
+    app.kubernetes.io/part-of: logmon
+spec:
+  replicas: 1
+  roles: [controller, broker]    # combined: 1 process vừa controller vừa broker
+  storage:
+    type: persistent-claim
+    size: 3Gi
+    class: local-path
+    deleteClaim: false
+  resources:
+    requests: { cpu: 200m, memory: 1Gi }
+    limits: { memory: 1Gi }
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: logmon
+  namespace: observability
+  labels: { app.kubernetes.io/part-of: logmon }
+  annotations:
+    strimzi.io/kraft: enabled
+    strimzi.io/node-pools: enabled
+spec:
+  kafka:
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      # RF=1 cho mọi internal topic (1 node) — KHÔNG để mặc định 3 (sẽ kẹt).
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+  # entityOperator quản lý KafkaTopic/KafkaUser CR (topic-as-code).
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+# Topic log chính (OTel gateway → consumer). 6 partition, retention 24h.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: otlp-logs
+  namespace: observability
+  labels:
+    strimzi.io/cluster: logmon
+    app.kubernetes.io/part-of: logmon
+spec:
+  topicName: otlp_logs            # tên topic Kafka thật (k8s name không cho `_`)
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: "86400000"      # 24h
+    cleanup.policy: delete
+---
+# Dead-letter queue: log không index được vào ES. Retention 14d.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: logs-dlq
+  namespace: observability
+  labels:
+    strimzi.io/cluster: logmon
+    app.kubernetes.io/part-of: logmon
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "1209600000"    # 14d
+    cleanup.policy: delete
