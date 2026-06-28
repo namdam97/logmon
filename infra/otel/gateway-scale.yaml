@@ -1,0 +1,86 @@
+# OTel Collector GATEWAY — Mode B (profile scale, ADR-018/027).
+# Khác Mode A (gateway.yaml): logs KHÔNG ghi thẳng ES mà đẩy vào Kafka topic
+# `otlp_logs` (buffer chính chống mất log khi ES nghẽn). Một collector consumer
+# riêng (consumer.yaml) đọc Kafka → ES. Traces vẫn → Jaeger như Mode A.
+#
+# Vì gateway đã chạy transform/datastream TRƯỚC khi export, attrs data_stream.*
+# được giữ nguyên qua Kafka (encoding otlp_proto) → consumer chỉ cần forward ES.
+
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+  transform/datastream:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["data_stream.type"], "logs")
+          - set(attributes["data_stream.dataset"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil
+          - set(attributes["data_stream.dataset"], "docker") where attributes["data_stream.dataset"] == nil
+          - set(attributes["data_stream.namespace"], "default")
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 50000
+    policies:
+      - name: errors-always
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: slow-requests
+        type: latency
+        latency: { threshold_ms: 1000 }
+      - name: probabilistic-default
+        type: probabilistic
+        probabilistic: { sampling_percentage: 10 }
+
+exporters:
+  # Buffer chính Mode B (doc_v2/03 §5): topic otlp_logs, encoding otlp_proto để
+  # giữ nguyên shape OTLP (attrs/resource) cho consumer. Kafka đã là durable
+  # buffer → collector chỉ cần queue nhỏ (sending_queue mặc định).
+  kafka:
+    brokers: [kafka:9092]
+    # OTel ≥0.123: topic/encoding lồng theo từng signal (logs::topic).
+    logs:
+      topic: otlp_logs
+      encoding: otlp_proto
+    producer:
+      compression: gzip
+    retry_on_failure:
+      enabled: true
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+service:
+  extensions: [file_storage]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/datastream, batch]
+      exporters: [kafka]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlp/jaeger]

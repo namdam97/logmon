@@ -6,6 +6,9 @@ COMPOSE           ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml
 # Production overlay (ADR-040): base + prod + .env.prod (gitignored). Network
 # segmentation + nginx/TLS + frontend. Xem infra/docker/.env.prod.example.
 COMPOSE_PROD      ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml -f $(CURDIR)/infra/docker/docker-compose.prod.yml --env-file $(CURDIR)/infra/docker/.env.prod
+# Mode B overlay (profile scale, ADR-027/011): Kafka buffer + Thanos + SeaweedFS
+# + ILM snapshot. Xem infra/docker/docker-compose.scale.yml.
+COMPOSE_SCALE     ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml -f $(CURDIR)/infra/docker/docker-compose.scale.yml
 POSTGRES_PASSWORD ?= logmon
 # URL trong network compose (service host = postgres) — cho migrate container.
 MIGRATE_DB        := postgres://logmon:$(POSTGRES_PASSWORD)@postgres:5432/logmon?sslmode=disable
@@ -16,7 +19,8 @@ DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmo
 .PHONY: help doctor hooks up up-full up-demo down down-v logs ps db \
         migrate migrate-down seed dev dev-be dev-fe \
         test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean \
-        tls-cert prod-up prod-down prod-logs prod-verify prod-backup
+        tls-cert prod-up prod-down prod-logs prod-verify prod-backup \
+        scale-up scale-down scale-logs
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -72,6 +76,17 @@ prod-verify: ## Smoke post-deploy (make prod-verify ; hoặc URL=https://domain)
 
 prod-backup: ## Backup Postgres (pg_dump -Fc → ./backups)
 	./infra/scripts/backup.sh
+
+# ── Mode B (production-scale tí hon): Kafka buffer + Thanos + SeaweedFS + ILM ──
+scale-up: ## Dựng stack Mode B (base + scale overlay + observability)
+	OTEL_EXPORTER_OTLP_ENDPOINT=otel-agent:4317 ELASTICSEARCH_URL=http://elasticsearch:9200 \
+	  $(COMPOSE_SCALE) --profile observability --profile scale up -d --build
+
+scale-down: ## Dừng stack Mode B (giữ volume)
+	$(COMPOSE_SCALE) --profile observability --profile scale down
+
+scale-logs: ## Tail logs Mode B (make scale-logs ; hoặc S=kafka)
+	$(COMPOSE_SCALE) --profile observability --profile scale logs -f --tail=100 $(S)
 
 logs: ## Tail logs (make logs ; hoặc make logs S=userservice)
 	$(COMPOSE) logs -f --tail=100 $(S)
