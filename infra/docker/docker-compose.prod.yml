@@ -1,0 +1,154 @@
+# LogMon production overlay (ADR-040) — dùng CÙNG base:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile observability up -d
+#
+# Khác dev:
+#  - Network segmentation: `data` (internal:true → PG/Redis/ES KHÔNG ra internet)
+#    + `proxy` (egress cho app tier). userservice/alertmanager multi-home (cần cả
+#    DB nội bộ lẫn egress để gửi notification/Slack).
+#  - Nginx là entrypoint DUY NHẤT publish ra 0.0.0.0 (80/443 + TLS). Mọi service
+#    base chỉ publish 127.0.0.1 (loopback — truy cập qua SSH tunnel khi cần).
+#  - Frontend (Next.js standalone) chạy như service, nginx proxy `/` → frontend,
+#    `/api` → userservice (same-origin → CSRF double-submit hoạt động).
+#  - COOKIE_SECURE=true, ALLOWED_ORIGIN=${PUBLIC_URL}; log rotation; resource limits.
+#
+# Yêu cầu env (nạp qua `--env-file infra/docker/.env.prod`): POSTGRES_PASSWORD,
+# JWT_SECRET, ELASTIC_PASSWORD, GRAFANA_ADMIN_PASSWORD, NOTIFICATION_ENCRYPTION_KEY,
+# ALERTMANAGER_WEBHOOK_TOKEN, PUBLIC_URL (vd https://logmon.example.com), NGINX_HOST.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    logging: *default-logging
+    networks: [data]
+    deploy:
+      resources:
+        limits: { memory: 1g, cpus: "1.0" }
+
+  redis:
+    logging: *default-logging
+    networks: [data]
+    deploy:
+      resources:
+        limits: { memory: 256m }
+
+  migrate:
+    networks: [data]
+
+  genrules-init:
+    networks: [data]
+
+  userservice:
+    logging: *default-logging
+    networks: [data, proxy]
+    environment:
+      COOKIE_SECURE: "true"
+      ALLOWED_ORIGIN: ${PUBLIC_URL}
+    deploy:
+      resources:
+        limits: { memory: 512m, cpus: "1.0" }
+
+  # ── Frontend (Next.js standalone) — chỉ nginx truy cập (proxy network) ─────────
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+      # FE gọi /api tương đối → nginx proxy sang userservice (same-origin).
+      API_PROXY_TARGET: http://userservice:8080
+    networks: [proxy]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/login"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      userservice:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits: { memory: 256m }
+
+  # ── Nginx reverse proxy + TLS (ADR-041) — entrypoint công khai duy nhất ────────
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/conf.d:/etc/nginx/conf.d:ro
+      - ../nginx/certs:/etc/nginx/certs:ro
+      - certbot-webroot:/var/www/certbot:ro
+    networks: [proxy]
+    depends_on:
+      userservice:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits: { memory: 128m }
+
+  # ── Observability: gắn network, log rotation (chạy với --profile observability) ─
+  prometheus:
+    logging: *default-logging
+    networks: [data]
+
+  alertmanager:
+    logging: *default-logging
+    networks: [data, proxy]   # data: nhận từ prometheus/userservice; proxy: egress Slack
+
+  grafana:
+    logging: *default-logging
+    networks: [data]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: ${PUBLIC_URL}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+
+  node-exporter:
+    networks: [data]
+
+  postgres-exporter:
+    networks: [data]
+
+  elasticsearch:
+    logging: *default-logging
+    networks: [data]
+
+  es-init:
+    networks: [data]
+
+  otel-gateway:
+    logging: *default-logging
+    networks: [data]
+
+  otel-agent:
+    logging: *default-logging
+    networks: [data]
+
+  jaeger:
+    logging: *default-logging
+    networks: [data]
+
+  elasticsearch-exporter:
+    networks: [data]
+
+networks:
+  data:
+    internal: true   # KHÔNG có route ra internet — DB/ES/Redis bị cô lập
+  proxy:
+    driver: bridge
+
+volumes:
+  certbot-webroot:   # webroot cho certbot HTTP-01 (Let's Encrypt)
