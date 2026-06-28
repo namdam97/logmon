@@ -32,6 +32,7 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
     spec:
+      serviceAccountName: userservice   # quyền apply PrometheusRule (rbac.yaml)
       containers:
         - name: userservice
           image: logmon/userservice:local

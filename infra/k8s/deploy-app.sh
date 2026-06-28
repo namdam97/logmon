@@ -60,6 +60,7 @@ kubectl apply -f "$K8S/app/migrate-job.yaml"
 kubectl wait --for=condition=complete job/db-migrate -n "$NS" --timeout=120s
 
 echo "deploy-app: apply app + ingress"
+kubectl apply -f "$K8S/app/rbac.yaml"
 kubectl apply -f "$K8S/app/userservice.yaml"
 kubectl apply -f "$K8S/app/frontend.yaml"
 kubectl apply -f "$K8S/app/ingress.yaml"

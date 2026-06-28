@@ -17,6 +17,9 @@ data:
   COOKIE_SECURE: "false"
   AUTH_RATE_PER_MINUTE: "10"
   AUTH_RATE_BURST: "5"
+  # Rule sync mode k8s (C3): apply PrometheusRule CR thay vì render file + reload.
+  RULE_SYNC_MODE: k8s
+  RULE_CR_NAMESPACE: logmon
   RULES_DIR: /etc/prometheus/generated
   PROMETHEUS_URL: http://prometheus-operated.observability.svc:9090
   ALERTMANAGER_URL: http://alertmanager-operated.observability.svc:9093
