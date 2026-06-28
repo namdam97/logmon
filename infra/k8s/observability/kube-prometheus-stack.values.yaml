@@ -18,6 +18,16 @@ prometheus:
   prometheusSpec:
     retention: 2d                       # C7 Thanos lo long-term → giữ ngắn
     scrapeInterval: 15s
+    # external label cho Thanos global view (dedup theo prometheus_replica auto).
+    externalLabels:
+      cluster: logmon
+    # Thanos sidecar (C7): upload block 2h → SeaweedFS + StoreAPI cho thanos-query.
+    # Secret thanos-objstore sinh runtime bởi install-thanos.sh.
+    thanos:
+      objectStorageConfig:
+        existingSecret:
+          name: thanos-objstore
+          key: objstore.yml
     # Nhặt MỌI ServiceMonitor/PodMonitor/PrometheusRule (kể cả ngoài release này)
     # → ServiceMonitor LogMon (C2) + PrometheusRule do alerting BC sinh (C3).
     serviceMonitorSelectorNilUsesHelmValues: false
