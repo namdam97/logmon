@@ -122,6 +122,11 @@ const (
 )
 
 func main() {
+	// Subcommand healthcheck cho Docker HEALTHCHECK (image distroless không có wget).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthCheck()
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "userservice:", err)
 		os.Exit(1)

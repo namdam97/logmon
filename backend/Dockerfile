@@ -15,4 +15,7 @@ WORKDIR /app
 COPY --from=build /out/userservice /app/userservice
 EXPOSE 8080
 USER nonroot:nonroot
+# Self-check qua chính binary (distroless không có wget/curl/shell).
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
+    CMD ["/app/userservice", "healthcheck"]
 ENTRYPOINT ["/app/userservice"]

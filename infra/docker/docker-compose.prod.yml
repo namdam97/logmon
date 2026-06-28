@@ -65,7 +65,8 @@ services:
       API_PROXY_TARGET: http://userservice:8080
     networks: [proxy]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/login"]
+      # 127.0.0.1 (KHÔNG localhost): Next bind 0.0.0.0 IPv4, localhost→::1 bị refuse.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/login"]
       interval: 15s
       timeout: 3s
       retries: 5

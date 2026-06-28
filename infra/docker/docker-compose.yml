@@ -70,7 +70,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      # Binary self-check (image distroless không có wget/curl/shell).
+      test: ["CMD", "/app/userservice", "healthcheck"]
       interval: 15s
       timeout: 3s
       retries: 5
