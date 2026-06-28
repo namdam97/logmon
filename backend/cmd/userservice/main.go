@@ -80,6 +80,11 @@ import (
 	sloquery "github.com/namdam97/logmon/backend/internal/slo/app/query"
 	slosnapshot "github.com/namdam97/logmon/backend/internal/slo/app/snapshot"
 	slodomain "github.com/namdam97/logmon/backend/internal/slo/domain"
+	topocache "github.com/namdam97/logmon/backend/internal/topology/adapters/cache"
+	topoes "github.com/namdam97/logmon/backend/internal/topology/adapters/elasticsearch"
+	topohttp "github.com/namdam97/logmon/backend/internal/topology/adapters/http"
+	topoapp "github.com/namdam97/logmon/backend/internal/topology/app"
+	topoports "github.com/namdam97/logmon/backend/internal/topology/ports"
 	usagehttp "github.com/namdam97/logmon/backend/internal/usage/adapters/http"
 	usagepg "github.com/namdam97/logmon/backend/internal/usage/adapters/postgres"
 	usageprom "github.com/namdam97/logmon/backend/internal/usage/adapters/prometheus"
@@ -789,6 +794,23 @@ func run() error {
 		usageapp.NewService(usagepg.NewQuotaRepository(pool), usageReader, usersys.NewClock()),
 	)
 
+	// Service topology (GĐ4.4): cạnh phụ thuộc suy từ traces (ES). Cache graph
+	// materialize: Redis (multi-instance) nếu có rdb, ngược lại in-memory. esURL
+	// rỗng → reader nil → graph rỗng (degrade an toàn).
+	var topoReader topoports.DependencyReader
+	if cfg.esURL != "" {
+		topoReader = topoes.NewReader(cfg.esURL).WithBasicAuth(cfg.esUsername, cfg.esPassword)
+	}
+	var topoCache topoports.GraphCache
+	if rdb != nil {
+		topoCache = topocache.NewRedis(rdb)
+	} else {
+		topoCache = topocache.NewMemory(nil)
+	}
+	topologyHandler := topohttp.NewHandler(
+		topoapp.NewService(topoReader, topoCache, usersys.NewClock()),
+	)
+
 	// Log search (GĐ2.8): truy vấn data stream logs-* trên Elasticsearch. Optional —
 	// ELASTICSEARCH_URL rỗng (stack nhẹ) → không đăng ký /logs.
 	var logHandler *loghttp.LogHandler
@@ -823,7 +845,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pipelineHandler, reporting.handler, usageHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pipelineHandler, reporting.handler, usageHandler, topologyHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -869,6 +891,7 @@ func buildRouter(
 	pipelineHandler *loghttp.PipelineHandler,
 	reportingHandler *reporthttp.Handler,
 	usageHandler *usagehttp.Handler,
+	topologyHandler *topohttp.Handler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	csrf *auth.CSRFProtector,
@@ -957,6 +980,7 @@ func buildRouter(
 	pipelineHandler.Register(api, tenantMW)
 	reportingHandler.Register(api, tenantMW)
 	usageHandler.Register(api, tenantMW)
+	topologyHandler.Register(api, tenantMW)
 	return r
 }
 
