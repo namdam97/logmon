@@ -1,0 +1,37 @@
+# Elasticsearch CR (ECK operator) — Phase III C4, thay container ES của Compose.
+# Single-node tiny. ECK tự sinh: user `elastic` (secret logmon-es-elastic-user),
+# CA/TLS. Tắt HTTP TLS (selfSignedCertificate.disabled) → http nội cluster như
+# Mode A (xpack http ssl off); network-isolated, ES client backend dùng plain http.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: logmon
+  namespace: observability
+  labels: { app.kubernetes.io/part-of: logmon }
+spec:
+  version: 9.4.2
+  http:
+    tls:
+      selfSignedCertificate:
+        disabled: true
+  nodeSets:
+    - name: default
+      count: 1
+      config:
+        node.roles: ["master", "data", "ingest"]
+        # allow_mmap=false: tránh yêu cầu vm.max_map_count=262144 trên node k3d.
+        node.store.allow_mmap: false
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              resources:
+                requests: { cpu: 200m, memory: 2Gi }
+                limits: { memory: 2Gi }   # ECK đặt heap = 50% → ~1Gi
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: local-path
+            resources: { requests: { storage: 3Gi } }

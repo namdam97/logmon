@@ -28,6 +28,8 @@ data:
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
   OTEL_SERVICE_NAME: userservice
   OTEL_EXPORTER_OTLP_INSECURE: "true"
-  ELASTICSEARCH_URL: ""
+  # ES qua ECK (C4): http nội cluster (TLS tắt). Password elastic do ECK sinh,
+  # install-eck.sh đồng bộ vào Secret logmon-secrets (ELASTICSEARCH_PASSWORD).
+  ELASTICSEARCH_URL: http://logmon-es-http.observability.svc:9200
   ELASTICSEARCH_USERNAME: elastic
   NOTIFICATION_KEY_ID: v1
