@@ -80,6 +80,11 @@ import (
 	sloquery "github.com/namdam97/logmon/backend/internal/slo/app/query"
 	slosnapshot "github.com/namdam97/logmon/backend/internal/slo/app/snapshot"
 	slodomain "github.com/namdam97/logmon/backend/internal/slo/domain"
+	usagehttp "github.com/namdam97/logmon/backend/internal/usage/adapters/http"
+	usagepg "github.com/namdam97/logmon/backend/internal/usage/adapters/postgres"
+	usageprom "github.com/namdam97/logmon/backend/internal/usage/adapters/prometheus"
+	usageapp "github.com/namdam97/logmon/backend/internal/usage/app"
+	usageports "github.com/namdam97/logmon/backend/internal/usage/ports"
 	userhttp "github.com/namdam97/logmon/backend/internal/user/adapters/http"
 	userpg "github.com/namdam97/logmon/backend/internal/user/adapters/postgres"
 	usersys "github.com/namdam97/logmon/backend/internal/user/adapters/system"
@@ -100,6 +105,8 @@ const (
 	_defaultRefreshTTL       = 14 * 24 * time.Hour // refresh token dài
 	_authRatePerMinute       = 10                  // mặc định: giới hạn login/register mỗi IP
 	_authRateBurst           = 5
+	_wsRatePerMinute         = 1000 // mặc định: giới hạn request mỗi workspace (doc_v2/07 §3)
+	_wsRateBurst             = 100
 
 	// _defaultWorkspaceID là workspace mặc định GĐ2 (multi-tenancy đầy đủ ở GĐ3).
 	_defaultWorkspaceID = "00000000-0000-0000-0000-000000000001"
@@ -772,6 +779,16 @@ func run() error {
 	go runExportWorker(ctx, reporting.worker, log)
 	go runReportScheduler(ctx, reporting.scheduler, log)
 
+	// Usage + quota (GĐ4.5): usage thực tế đọc từ Prometheus (rỗng → usage = 0,
+	// degrade an toàn). Quota lưu Postgres.
+	var usageReader usageports.UsageReader
+	if cfg.promURL != "" {
+		usageReader = usageprom.NewReader(cfg.promURL)
+	}
+	usageHandler := usagehttp.NewHandler(
+		usageapp.NewService(usagepg.NewQuotaRepository(pool), usageReader, usersys.NewClock()),
+	)
+
 	// Log search (GĐ2.8): truy vấn data stream logs-* trên Elasticsearch. Optional —
 	// ELASTICSEARCH_URL rỗng (stack nhẹ) → không đăng ký /logs.
 	var logHandler *loghttp.LogHandler
@@ -806,7 +823,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pipelineHandler, reporting.handler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pipelineHandler, reporting.handler, usageHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -851,6 +868,7 @@ func buildRouter(
 	logHandler *loghttp.LogHandler,
 	pipelineHandler *loghttp.PipelineHandler,
 	reportingHandler *reporthttp.Handler,
+	usageHandler *usagehttp.Handler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	csrf *auth.CSRFProtector,
@@ -895,6 +913,12 @@ func buildRouter(
 		"/api/v1/auth/refresh",
 		"/api/v1/alerts/webhook",
 	))
+	// Rate limit per workspace (GĐ4.5, doc_v2/07 §3): khóa theo header X-Workspace-ID
+	// (rỗng → bỏ qua, vd login/me). In-memory single-instance; prod→redis_rate (nợ).
+	wsRate := middleware.NewPerMinuteLimiter(_wsRatePerMinute, _wsRateBurst)
+	api.Use(wsRate.KeyedMiddleware(func(c *gin.Context) string {
+		return c.GetHeader(auth.WorkspaceHeader)
+	}))
 	handler := userhttp.NewHandler(svc, refreshSvc, csrf, userhttp.CookieConfig{
 		Secure:               cookieSecure,
 		MaxAgeSeconds:        int(_defaultJWTTTL.Seconds()),
@@ -932,6 +956,7 @@ func buildRouter(
 	}
 	pipelineHandler.Register(api, tenantMW)
 	reportingHandler.Register(api, tenantMW)
+	usageHandler.Register(api, tenantMW)
 	return r
 }
 

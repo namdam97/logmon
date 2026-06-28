@@ -48,8 +48,22 @@ func (l *RateLimiter) limiterFor(ip string) *rate.Limiter {
 
 // Middleware trả về handler chặn request vượt ngưỡng với 429.
 func (l *RateLimiter) Middleware() gin.HandlerFunc {
+	return l.KeyedMiddleware(func(c *gin.Context) string { return c.ClientIP() })
+}
+
+// KeyedMiddleware giới hạn theo khóa tùy ý (vd workspace) thay vì IP. Khóa rỗng
+// → bỏ qua (request chưa qua resolve workspace). Trả 429 khi vượt ngưỡng.
+//
+// LƯU Ý: token bucket in-memory — single-instance. Multi-instance prod nên dùng
+// redis_rate (GCRA) tập trung; quota per workspace = nợ GĐ4 (doc_v2/07 §3).
+func (l *RateLimiter) KeyedMiddleware(keyFn func(*gin.Context) string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !l.limiterFor(c.ClientIP()).Allow() {
+		key := keyFn(c)
+		if key == "" {
+			c.Next()
+			return
+		}
+		if !l.limiterFor(key).Allow() {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"success": false, "error": "too many requests",
 			})
