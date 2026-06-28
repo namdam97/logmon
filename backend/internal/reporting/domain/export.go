@@ -52,13 +52,13 @@ func ParseExportType(raw string) (ExportType, error) {
 type ExportStatus int
 
 const (
-	// ExportPending: chờ worker xử lý.
+	// ExportPending chờ worker xử lý.
 	ExportPending ExportStatus = iota + 1
-	// ExportProcessing: đang xử lý.
+	// ExportProcessing đang xử lý.
 	ExportProcessing
-	// ExportCompleted: hoàn tất, file sẵn sàng (signed URL).
+	// ExportCompleted hoàn tất, file sẵn sàng (signed URL).
 	ExportCompleted
-	// ExportFailed: thất bại.
+	// ExportFailed thất bại.
 	ExportFailed
 )
 
@@ -159,20 +159,44 @@ func ReconstructJob(id, workspaceID, userID string, et ExportType, params map[st
 	}
 }
 
-// Accessors.
-func (j ExportJob) ID() string                  { return j.id }
-func (j ExportJob) WorkspaceID() string         { return j.workspaceID }
-func (j ExportJob) UserID() string              { return j.userID }
-func (j ExportJob) ExportType() ExportType      { return j.exportType }
+// ID trả về định danh job.
+func (j ExportJob) ID() string { return j.id }
+
+// WorkspaceID trả về workspace.
+func (j ExportJob) WorkspaceID() string { return j.workspaceID }
+
+// UserID trả về user yêu cầu export.
+func (j ExportJob) UserID() string { return j.userID }
+
+// ExportType trả về loại dữ liệu xuất.
+func (j ExportJob) ExportType() ExportType { return j.exportType }
+
+// QueryParams trả về bản sao tham số truy vấn.
 func (j ExportJob) QueryParams() map[string]any { return copyParams(j.queryParams) }
-func (j ExportJob) Format() ReportFormat        { return j.format }
-func (j ExportJob) Status() ExportStatus        { return j.status }
-func (j ExportJob) RowCount() int64             { return j.rowCount }
-func (j ExportJob) FilePath() string            { return j.filePath }
-func (j ExportJob) FileSizeBytes() int64        { return j.fileSizeBytes }
-func (j ExportJob) CreatedAt() time.Time        { return j.createdAt }
-func (j ExportJob) CompletedAt() *time.Time     { return j.completedAt }
-func (j ExportJob) ExpiresAt() *time.Time       { return j.expiresAt }
+
+// Format trả về định dạng file.
+func (j ExportJob) Format() ReportFormat { return j.format }
+
+// Status trả về trạng thái hiện tại.
+func (j ExportJob) Status() ExportStatus { return j.status }
+
+// RowCount trả về số dòng đã export.
+func (j ExportJob) RowCount() int64 { return j.rowCount }
+
+// FilePath trả về key file kết quả (S3/local).
+func (j ExportJob) FilePath() string { return j.filePath }
+
+// FileSizeBytes trả về kích thước file.
+func (j ExportJob) FileSizeBytes() int64 { return j.fileSizeBytes }
+
+// CreatedAt trả về thời điểm tạo (UTC).
+func (j ExportJob) CreatedAt() time.Time { return j.createdAt }
+
+// CompletedAt trả về thời điểm hoàn tất (nil nếu chưa).
+func (j ExportJob) CompletedAt() *time.Time { return j.completedAt }
+
+// ExpiresAt trả về hạn của signed URL (nil nếu chưa hoàn tất).
+func (j ExportJob) ExpiresAt() *time.Time { return j.expiresAt }
 
 // MarkProcessing chuyển pending→processing. Chỉ job pending mới process được.
 func (j ExportJob) MarkProcessing() (ExportJob, error) {

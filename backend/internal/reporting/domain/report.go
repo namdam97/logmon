@@ -67,9 +67,9 @@ func ParseReportType(raw string) (ReportType, error) {
 type ReportFormat int
 
 const (
-	// FormatPDF: báo cáo PDF.
+	// FormatPDF báo cáo PDF.
 	FormatPDF ReportFormat = iota + 1
-	// FormatCSV: dữ liệu CSV.
+	// FormatCSV dữ liệu CSV.
 	FormatCSV
 )
 

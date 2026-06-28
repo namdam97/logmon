@@ -57,6 +57,12 @@ import (
 	"github.com/namdam97/logmon/backend/internal/notification/app/notify"
 	notifworker "github.com/namdam97/logmon/backend/internal/notification/app/worker"
 	notifdomain "github.com/namdam97/logmon/backend/internal/notification/domain"
+	reporthttp "github.com/namdam97/logmon/backend/internal/reporting/adapters/http"
+	reportpg "github.com/namdam97/logmon/backend/internal/reporting/adapters/postgres"
+	reportsys "github.com/namdam97/logmon/backend/internal/reporting/adapters/system"
+	reportcommand "github.com/namdam97/logmon/backend/internal/reporting/app/command"
+	reportquery "github.com/namdam97/logmon/backend/internal/reporting/app/query"
+	reportworker "github.com/namdam97/logmon/backend/internal/reporting/app/worker"
 	"github.com/namdam97/logmon/backend/internal/shared/audit"
 	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/crypto"
@@ -88,6 +94,8 @@ const (
 	_dbConnectTimeout        = 10 * time.Second
 	_escalationSweepInterval = time.Minute         // chu kỳ quét escalation (GĐ3.4)
 	_postmortemSweepInterval = time.Hour           // chu kỳ quét reminder postmortem (GĐ3.5)
+	_exportWorkerInterval    = 10 * time.Second    // chu kỳ tiêu thụ export job (GĐ4.3)
+	_reportSchedulerInterval = time.Minute         // chu kỳ chạy report schedule (GĐ4.3)
 	_defaultJWTTTL           = 15 * time.Minute    // access token ngắn (ADR-023)
 	_defaultRefreshTTL       = 14 * 24 * time.Hour // refresh token dài
 	_authRatePerMinute       = 10                  // mặc định: giới hạn login/register mỗi IP
@@ -127,6 +135,8 @@ type config struct {
 	esURL          string
 	esUsername     string
 	esPassword     string
+	exportDir      string
+	exportBaseURL  string
 	redisAddr      string
 	redisPassword  string
 	notifKeyID     string
@@ -153,9 +163,11 @@ func loadConfig() config {
 		otelService:  envOr("OTEL_SERVICE_NAME", _serviceName),
 		otelInsecure: envOr("OTEL_EXPORTER_OTLP_INSECURE", "true") != "false",
 		// Elasticsearch log search (GĐ2.8). Rỗng → tắt /logs (stack nhẹ không có ES).
-		esURL:      os.Getenv("ELASTICSEARCH_URL"),
-		esUsername: envOr("ELASTICSEARCH_USERNAME", "elastic"),
-		esPassword: os.Getenv("ELASTICSEARCH_PASSWORD"),
+		esURL:         os.Getenv("ELASTICSEARCH_URL"),
+		exportDir:     envOr("EXPORT_DIR", "/tmp/logmon-exports"),
+		exportBaseURL: envOr("EXPORT_BASE_URL", "/exports"),
+		esUsername:    envOr("ELASTICSEARCH_USERNAME", "elastic"),
+		esPassword:    os.Getenv("ELASTICSEARCH_PASSWORD"),
 		// Notification delivery (GĐ3.2). REDIS_ADDR rỗng → delivery worker tắt
 		// (CRUD kênh vẫn chạy). notifEncKey rỗng → derive từ JWT secret (HMAC).
 		redisAddr:     os.Getenv("REDIS_ADDR"),
@@ -498,6 +510,76 @@ func runPostmortemReminder(ctx context.Context, svc *incidentcommand.PostmortemR
 	}
 }
 
+// reportingDeps gom thành phần reporting BC (GĐ4.3).
+type reportingDeps struct {
+	handler   *reporthttp.Handler
+	worker    *reportworker.ExportWorker
+	scheduler *reportworker.ReportScheduler
+}
+
+// buildReporting dựng reporting BC: scheduled reports + async export. Generator/
+// exporter/delivery là adapter dev (CSV/local FS) — bản PDF/S3/real-query là nợ GĐ4.
+func buildReporting(pool *pgxpool.Pool, exportDir, exportBaseURL string) reportingDeps {
+	ids := usersys.NewUUIDGenerator()
+	clock := usersys.NewClock()
+	schedRepo := reportpg.NewScheduleRepository(pool)
+	jobRepo := reportpg.NewExportJobRepository(pool)
+	blobs := reportsys.NewLocalBlobStore(exportDir, exportBaseURL)
+
+	schedSvc := reportcommand.NewScheduleService(schedRepo, reportsys.Cron{}, ids, clock)
+	exportSvc := reportcommand.NewExportService(jobRepo, ids, clock)
+	queries := reportquery.NewQueries(schedRepo, jobRepo)
+
+	return reportingDeps{
+		handler:   reporthttp.NewHandler(schedSvc, exportSvc, queries, blobs),
+		worker:    reportworker.NewExportWorker(jobRepo, reportsys.CSVExporter{}, blobs, clock),
+		scheduler: reportworker.NewReportScheduler(schedRepo, schedRepo, reportsys.Cron{}, reportsys.CSVGenerator{}, reportsys.LogDelivery{}, clock),
+	}
+}
+
+// runExportWorker tiêu thụ export job pending định kỳ (stop qua ctx). Mỗi tick
+// xử lý liên tục đến khi hàng đợi trống.
+func runExportWorker(ctx context.Context, w *reportworker.ExportWorker, log *logger.Logger) {
+	ticker := time.NewTicker(_exportWorkerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for {
+				processed, err := w.ProcessOne(ctx)
+				if err != nil {
+					log.Error(ctx, err, "export worker")
+				}
+				if !processed {
+					break
+				}
+			}
+		}
+	}
+}
+
+// runReportScheduler chạy report schedule đến hạn định kỳ (stop qua ctx).
+func runReportScheduler(ctx context.Context, s *reportworker.ReportScheduler, log *logger.Logger) {
+	ticker := time.NewTicker(_reportSchedulerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			res, err := s.Sweep(ctx)
+			if err != nil {
+				log.Error(ctx, err, "report scheduler sweep")
+			}
+			if res.Ran > 0 {
+				log.Infof(ctx, "report scheduler sweep", "ran", strconv.Itoa(res.Ran))
+			}
+		}
+	}
+}
+
 // budgetExhaustedToIncident map outbox event BudgetExhausted → auto-create SEV2
 // incident (doc_v2/06 §1.1-1.2). Idempotent: handler dedup theo source+sloId.
 func budgetExhaustedToIncident(create *incidentcommand.CreateIncidentHandler) outbox.Handler {
@@ -684,6 +766,12 @@ func run() error {
 		go notif.worker.Run(ctx) // tiêu thụ delivery queue (stop qua ctx)
 	}
 
+	// Reporting (GĐ4.3): scheduled reports + async export. Runner nền tiêu thụ
+	// export job + chạy schedule đến hạn (stop qua ctx).
+	reporting := buildReporting(pool, cfg.exportDir, cfg.exportBaseURL)
+	go runExportWorker(ctx, reporting.worker, log)
+	go runReportScheduler(ctx, reporting.scheduler, log)
+
 	// Log search (GĐ2.8): truy vấn data stream logs-* trên Elasticsearch. Optional —
 	// ELASTICSEARCH_URL rỗng (stack nhẹ) → không đăng ký /logs.
 	var logHandler *loghttp.LogHandler
@@ -718,7 +806,7 @@ func run() error {
 		log.Info(context.Background(), "WARNING: ALERTMANAGER_WEBHOOK_TOKEN chưa set — webhook receiver fail-closed (mọi POST /alerts/webhook trả 401)")
 	}
 
-	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pipelineHandler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
+	router := buildRouter(log, mx, svc, refreshSvc, alerting, slo, notif, incident, logHandler, pipelineHandler, reporting.handler, pool, jwtSvc, csrf, cfg.otelService, cfg.cookieSecure, cfg.allowedOrigin,
 		cfg.authRatePerMin, cfg.authRateBurst, cfg.webhookToken)
 
 	srv := &http.Server{
@@ -762,6 +850,7 @@ func buildRouter(
 	incident incidentDeps,
 	logHandler *loghttp.LogHandler,
 	pipelineHandler *loghttp.PipelineHandler,
+	reportingHandler *reporthttp.Handler,
 	pool *pgxpool.Pool,
 	jwtSvc *auth.JWTService,
 	csrf *auth.CSRFProtector,
@@ -842,6 +931,7 @@ func buildRouter(
 		logHandler.Register(api, tenantMW)
 	}
 	pipelineHandler.Register(api, tenantMW)
+	reportingHandler.Register(api, tenantMW)
 	return r
 }
 

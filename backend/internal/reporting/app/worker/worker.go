@@ -30,6 +30,8 @@ func NewExportWorker(repo ports.ExportJobRepository, exporter ports.Exporter, bl
 
 // ProcessOne xử lý tối đa một job pending. processed=false nếu hàng đợi trống.
 func (w *ExportWorker) ProcessOne(ctx context.Context) (bool, error) {
+	// ClaimNextPending atomic chuyển pending→processing (FOR UPDATE SKIP LOCKED)
+	// và trả job đã ở trạng thái processing — không cần MarkProcessing nữa.
 	job, ok, err := w.repo.ClaimNextPending(ctx)
 	if err != nil {
 		return false, fmt.Errorf("claim job: %w", err)
@@ -37,25 +39,17 @@ func (w *ExportWorker) ProcessOne(ctx context.Context) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	processing, err := job.MarkProcessing()
-	if err != nil {
-		// Job không còn pending (đã bị claim khác) — bỏ qua, không lỗi.
-		return true, nil
-	}
-	if err := w.repo.Update(ctx, processing); err != nil {
-		return true, fmt.Errorf("mark processing: %w", err)
-	}
 
-	data, rowCount, err := w.exporter.Export(ctx, processing)
+	data, rowCount, err := w.exporter.Export(ctx, job)
 	if err != nil {
-		return true, w.fail(ctx, processing, err)
+		return true, w.fail(ctx, job, err)
 	}
-	key := exportKey(processing)
+	key := exportKey(job)
 	if err := w.blobs.Put(ctx, key, data); err != nil {
-		return true, w.fail(ctx, processing, err)
+		return true, w.fail(ctx, job, err)
 	}
 	now := w.clock.Now()
-	done := processing.MarkCompleted(key, rowCount, int64(len(data)), now, now.Add(_signedURLTTL))
+	done := job.MarkCompleted(key, rowCount, int64(len(data)), now, now.Add(_signedURLTTL))
 	if err := w.repo.Update(ctx, done); err != nil {
 		return true, fmt.Errorf("mark completed: %w", err)
 	}
