@@ -1,0 +1,22 @@
+# ServiceMonitor — Prometheus Operator scrape userservice /metrics (Phase III C2).
+# Thay job tĩnh `logmon-services` trong prometheus.yml (Mode A) bằng CR. Label
+# `service` gắn qua relabel để SLO BC (GĐ3.1) lọc theo service={...} như cũ.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: logmon-userservice
+  namespace: logmon
+  labels: { app.kubernetes.io/part-of: logmon, release: kps }
+spec:
+  namespaceSelector:
+    matchNames: [logmon]
+  selector:
+    matchLabels: { app.kubernetes.io/name: userservice }
+  endpoints:
+    - port: http            # Service userservice port name
+      path: /metrics
+      interval: 15s
+      relabelings:
+        # Gắn nhãn service=userservice (đồng nhất với recording/alerting rules).
+        - targetLabel: service
+          replacement: userservice

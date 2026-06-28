@@ -1,0 +1,90 @@
+# kube-prometheus-stack — values TINY cho k3d local (Phase III C2, doc_v2/10 §7).
+# Thay Prometheus+Alertmanager+Grafana compose Mode A bằng Operator-managed CR.
+#
+# k3s gotcha: control-plane (controller-manager/scheduler/etcd/kube-proxy) KHÔNG
+# expose metrics endpoint riêng như kubeadm → tắt để target không DOWN giả.
+# Long-term metrics: Thanos sidecar bật ở C7 (retention ngắn ở đây).
+
+fullnameOverride: kps
+
+# ── Control-plane scrapes không áp dụng cho k3s ────────────────────────────────
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeEtcd: { enabled: false }
+kubeProxy: { enabled: false }
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    retention: 2d                       # C7 Thanos lo long-term → giữ ngắn
+    scrapeInterval: 15s
+    # Nhặt MỌI ServiceMonitor/PodMonitor/PrometheusRule (kể cả ngoài release này)
+    # → ServiceMonitor LogMon (C2) + PrometheusRule do alerting BC sinh (C3).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}   # mọi namespace
+    ruleNamespaceSelector: {}
+    resources:
+      requests: { cpu: 100m, memory: 512Mi }
+      limits: { memory: 1536Mi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources: { requests: { storage: 3Gi } }
+
+# ── Alertmanager ──────────────────────────────────────────────────────────────
+alertmanager:
+  alertmanagerSpec:
+    retention: 120h
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+      limits: { memory: 128Mi }
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources: { requests: { storage: 1Gi } }
+
+# ── Grafana ───────────────────────────────────────────────────────────────────
+grafana:
+  # Local dev fallback — staging/prod set qua --set grafana.adminPassword hoặc secret.
+  adminPassword: admin-change-me
+  defaultDashboardsTimezone: browser
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 1Gi
+  # Expose Grafana qua Ingress Traefik tại /grafana (sub-path).
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s:8088/grafana/"
+      serve_from_sub_path: true
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts: [logmon.local]
+    path: /grafana
+
+# ── Exporters (tiny) ──────────────────────────────────────────────────────────
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { memory: 64Mi }
+kube-state-metrics:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
+# Operator nhẹ.
+prometheusOperator:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }

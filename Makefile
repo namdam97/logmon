@@ -21,7 +21,7 @@ DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmo
         test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean \
         tls-cert prod-up prod-down prod-logs prod-verify prod-backup \
         scale-up scale-down scale-logs \
-        k8s-up k8s-down k8s-app k8s-ps k8s-logs
+        k8s-up k8s-down k8s-app k8s-monitoring k8s-ps k8s-logs
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -101,6 +101,9 @@ k8s-down: ## Xoá cluster k3d (mất PVC; dùng `k3d cluster stop logmon` để 
 
 k8s-app: ## Deploy core app lên k8s (PG/Redis/migrate/userservice/frontend/Ingress)
 	$(K8S_DIR)/deploy-app.sh
+
+k8s-monitoring: ## C2: cài kube-prometheus-stack (Prometheus/Alertmanager/Grafana) + ServiceMonitor
+	$(K8S_DIR)/observability/install-monitoring.sh
 
 k8s-ps: ## Trạng thái pods mọi namespace LogMon
 	kubectl get pods -n $(K8S_NS) -o wide; kubectl get pods -n observability -o wide 2>/dev/null || true
