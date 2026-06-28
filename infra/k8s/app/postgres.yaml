@@ -1,0 +1,66 @@
+# Postgres StatefulSet (Phase III C1). StatefulSet (KHÔNG Deployment) vì DB có
+# state + identity ổn định + PVC per-replica. 1 replica (tiny); production HA →
+# CloudNativePG operator. Headless Service cho DNS ổn định `postgres`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: logmon
+  labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/part-of: logmon }
+spec:
+  clusterIP: None          # headless: pod DNS postgres-0.postgres.logmon.svc
+  selector: { app.kubernetes.io/name: postgres }
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: logmon
+  labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/part-of: logmon }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: postgres }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/part-of: logmon }
+    spec:
+      securityContext:
+        fsGroup: 999          # postgres group trong image alpine → ghi được PVC
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          env:
+            - { name: POSTGRES_USER, value: logmon }
+            - { name: POSTGRES_DB, value: logmon }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: logmon-secrets, key: POSTGRES_PASSWORD } }
+            # Subdir riêng: tránh xung đột với lost+found ở mount root của PVC.
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "logmon", "-d", "logmon"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "logmon", "-d", "logmon"] }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 1Gi } }

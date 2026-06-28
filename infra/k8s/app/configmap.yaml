@@ -1,0 +1,30 @@
+# Cấu hình non-secret cho userservice (Phase III C1). Secret (DATABASE_URL,
+# JWT_SECRET, …) sinh runtime bởi deploy-app.sh → Secret `logmon-secrets`.
+# C1 chạy app + DB; OTEL/ELASTICSEARCH để rỗng (bật ở C4/C6). PROMETHEUS_URL/
+# ALERTMANAGER_URL trỏ Service observability (lên ở C2) — rỗng-an-toàn nếu chưa có.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logmon-config
+  namespace: logmon
+  labels: { app.kubernetes.io/part-of: logmon }
+data:
+  PORT: "8080"
+  LOG_LEVEL: info
+  # Ingress origin (Traefik, host logmon.local qua loopback 8088). Same-origin CSRF.
+  ALLOWED_ORIGIN: http://logmon.local:8088
+  # Ingress local là HTTP → cookie không Secure (như Mode A dev). VPS/TLS: true.
+  COOKIE_SECURE: "false"
+  AUTH_RATE_PER_MINUTE: "10"
+  AUTH_RATE_BURST: "5"
+  RULES_DIR: /etc/prometheus/generated
+  PROMETHEUS_URL: http://prometheus-operated.observability.svc:9090
+  ALERTMANAGER_URL: http://alertmanager-operated.observability.svc:9093
+  REDIS_ADDR: redis:6379
+  # Bật ở C6 (OTel gateway) / C4 (ES). Rỗng → tracing & /logs tắt (fail-safe).
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OTEL_SERVICE_NAME: userservice
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+  ELASTICSEARCH_URL: ""
+  ELASTICSEARCH_USERNAME: elastic
+  NOTIFICATION_KEY_ID: v1

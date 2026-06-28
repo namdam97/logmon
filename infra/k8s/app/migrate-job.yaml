@@ -1,0 +1,38 @@
+# Migrate Job (Phase III C1) — golang-migrate up, one-shot idempotent (ADR-043).
+# File .sql nạp qua ConfigMap `db-migrations` (deploy-app.sh sinh từ backend/
+# migrations). DATABASE_URL ở Secret. Job có ttl + backoff; chạy lại mỗi deploy
+# (xoá Job cũ trước apply vì spec Job immutable — deploy-app.sh lo việc đó).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: logmon
+  labels: { app.kubernetes.io/name: db-migrate, app.kubernetes.io/part-of: logmon }
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: db-migrate, app.kubernetes.io/part-of: logmon }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: migrate/migrate:v4.18.1
+          args:
+            - -path
+            - /migrations
+            - -database
+            - $(DATABASE_URL)
+            - up
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: logmon-secrets, key: DATABASE_URL } }
+          volumeMounts:
+            - { name: migrations, mountPath: /migrations, readOnly: true }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: migrations
+          configMap: { name: db-migrations }
