@@ -9,6 +9,9 @@ const API_PROXY_TARGET = process.env.API_PROXY_TARGET ?? "http://localhost:8080"
 
 const nextConfig = {
   reactStrictMode: true,
+  // standalone: gói server + deps tối thiểu → image Docker nhỏ, chạy `node server.js`.
+  // App Router/RSC cần Node SSR (ADR-036) nên KHÔNG export static.
+  output: "standalone",
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${API_PROXY_TARGET}/api/:path*` },
