@@ -3,6 +3,9 @@
 # profile `observability`; demo workload sau profile `demo`.
 
 COMPOSE           ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml
+# Production overlay (ADR-040): base + prod + .env.prod (gitignored). Network
+# segmentation + nginx/TLS + frontend. Xem infra/docker/.env.prod.example.
+COMPOSE_PROD      ?= docker compose -f $(CURDIR)/infra/docker/docker-compose.yml -f $(CURDIR)/infra/docker/docker-compose.prod.yml --env-file $(CURDIR)/infra/docker/.env.prod
 POSTGRES_PASSWORD ?= logmon
 # URL trong network compose (service host = postgres) — cho migrate container.
 MIGRATE_DB        := postgres://logmon:$(POSTGRES_PASSWORD)@postgres:5432/logmon?sslmode=disable
@@ -12,7 +15,8 @@ DB_URL_HOST       := postgres://logmon:$(POSTGRES_PASSWORD)@localhost:5432/logmo
 .DEFAULT_GOAL := help
 .PHONY: help doctor hooks up up-full up-demo down down-v logs ps db \
         migrate migrate-down seed dev dev-be dev-fe \
-        test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean
+        test test-be test-fe test-integration e2e ci-local fmt lint vuln build clean \
+        tls-cert prod-up prod-down prod-logs prod-verify prod-backup
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -48,6 +52,26 @@ down: ## Dừng + xoá container (giữ volume/data)
 
 down-v: ## Dừng + xoá cả volume (reset sạch DB/ES/Grafana)
 	$(COMPOSE) --profile observability --profile demo down -v
+
+# ── Production-like (local hoặc VPS) — Mode A: nginx/TLS + network segmentation ─
+tls-cert: ## Sinh self-signed cert cho HTTPS local (prod dùng Let's Encrypt)
+	./infra/nginx/gen-self-signed.sh $(CN)
+
+prod-up: tls-cert ## Dựng stack production-like (base+prod overlay, cần infra/docker/.env.prod)
+	@test -f infra/docker/.env.prod || { echo "THIẾU infra/docker/.env.prod — copy từ .env.prod.example"; exit 1; }
+	$(COMPOSE_PROD) --profile observability up -d --build
+
+prod-down: ## Dừng stack production-like (giữ volume)
+	$(COMPOSE_PROD) --profile observability down
+
+prod-logs: ## Tail logs prod (make prod-logs ; hoặc S=nginx)
+	$(COMPOSE_PROD) logs -f --tail=100 $(S)
+
+prod-verify: ## Smoke post-deploy (make prod-verify ; hoặc URL=https://domain)
+	./infra/scripts/verify.sh $(URL)
+
+prod-backup: ## Backup Postgres (pg_dump -Fc → ./backups)
+	./infra/scripts/backup.sh
 
 logs: ## Tail logs (make logs ; hoặc make logs S=userservice)
 	$(COMPOSE) logs -f --tail=100 $(S)

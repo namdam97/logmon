@@ -38,3 +38,6 @@ pnpm-debug.log*
 # Docker volumes / data
 infra/**/data/
 examples/demo-order/demo-order
+
+# Backups
+/backups/
