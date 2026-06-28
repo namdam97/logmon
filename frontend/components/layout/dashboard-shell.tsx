@@ -7,6 +7,7 @@ import {
   Bell,
   Gauge,
   LogOut,
+  Network,
   Radio,
   Send,
   ShieldAlert,
@@ -28,6 +29,7 @@ const NAV = [
   { href: "/oncall", label: "Trực ca", icon: Radio },
   { href: "/channels", label: "Kênh báo", icon: Send },
   { href: "/pipeline", label: "Pipeline", icon: Workflow },
+  { href: "/topology", label: "Topology", icon: Network },
   { href: "/profile", label: "Hồ sơ", icon: User },
 ];
 

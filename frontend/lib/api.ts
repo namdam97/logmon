@@ -354,3 +354,31 @@ export function retryDLQ(ids: number[]): Promise<{ retried: number[]; failed: Re
     body: JSON.stringify({ ids }),
   });
 }
+
+// ── Service topology (GĐ4.4) ──────────────────────────────────────────────────
+
+export interface TopologyNode {
+  service: string;
+  status: "healthy" | "degraded" | "unhealthy" | "unknown";
+  callCount: number;
+  errorCount: number;
+  errorRate: number;
+}
+
+export interface TopologyEdge {
+  source: string;
+  target: string;
+  callCount: number;
+  errorCount: number;
+  errorRate: number;
+}
+
+export interface TopologyGraph {
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  generatedAt: string;
+}
+
+export function topology(): Promise<TopologyGraph> {
+  return request<TopologyGraph>("/api/v1/topology");
+}

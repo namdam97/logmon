@@ -6,6 +6,8 @@ import {
   listAlertRules,
   readCookie,
   setAlertRuleEnabled,
+  setWorkspaceID,
+  topology,
 } from "./api";
 
 // fakeResponse dựng đối tượng tối thiểu giống Response để mock fetch.
@@ -109,5 +111,37 @@ describe("alerting API client", () => {
     );
 
     await expect(listActiveAlerts()).rejects.toThrow("boom");
+  });
+});
+
+describe("topology API client", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("document", { cookie: "" });
+    const store: Record<string, string> = {};
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store[k] ?? null,
+      setItem: (k: string, v: string) => {
+        store[k] = v;
+      },
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("topology gọi GET /topology kèm header workspace", async () => {
+    setWorkspaceID("ws-9");
+    const graph = { nodes: [], edges: [], generatedAt: "2026-06-28T00:00:00Z" };
+    fetchMock.mockResolvedValue(fakeResponse({ success: true, data: graph }));
+
+    const got = await topology();
+
+    expect(got).toEqual(graph);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain("/api/v1/topology");
+    expect(init.method ?? "GET").toBe("GET");
+    expect(init.headers["X-Workspace-ID"]).toBe("ws-9");
   });
 });
