@@ -40,6 +40,8 @@ Alerting (rules, silence, inhibition)
    → Notification (Slack, Email, PagerDuty, Teams, webhook)
 ```
 
+> **GĐ5 (mới):** trên cùng là tầng **AI-Assisted Incident Automation** — agent chẩn đoán (RCA) read-only qua MCP + RAG runbook/postmortem, **human-in-the-loop (trần L2)** để giảm MTTR. Chi tiết: [17-ai-incident-automation.md](17-ai-incident-automation.md).
+
 ---
 
 ## 3. Personas
@@ -71,6 +73,7 @@ Alerting (rules, silence, inhibition)
 | Multi-tenancy (workspace, RBAC) | GĐ 3 |
 | Mode B scale (Kafka buffer, Thanos long-term, ES cluster) | GĐ 4 |
 | Reports/export, service topology, cost dashboard | GĐ 4 |
+| AI-Assisted Incident Automation: RCA read-only (L1) + RAG runbook/postmortem + gợi ý remediation có cổng (L2), human-in-the-loop | GĐ 5 |
 
 Chi tiết và Definition of Done từng giai đoạn: [12-roadmap.md](12-roadmap.md).
 
@@ -82,7 +85,7 @@ Chi tiết và Definition of Done từng giai đoạn: [12-roadmap.md](12-roadma
 
 - **Không** là APM thương mại đầy đủ (profiling, RUM, synthetics).
 - **Không** tự build engine đánh giá alert rule — Prometheus đánh giá, LogMon quản lý và đồng bộ (ADR-024).
-- **Không** SQL-based log query (ClickHouse) và AI/ML anomaly detection — để ngỏ tương lai.
+- **Không** SQL-based log query (ClickHouse) — để ngỏ tương lai. AI **hỗ trợ xử lý sự cố** (RCA + RAG runbook, human-in-the-loop L2) đã là **GĐ 5** (ADR-031…035, [17-ai-incident-automation.md](17-ai-incident-automation.md)); nhưng vẫn **không** closed-loop auto-remediation và **không** ML anomaly-detection dự đoán.
 - **Không** hỗ trợ non-containerized workloads ở GĐ 1-3 (chỉ Docker/K8s stdout logs).
 - **Không** billing/payment thật — "cost dashboard" chỉ là ước tính usage.
 
