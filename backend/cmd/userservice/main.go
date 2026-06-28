@@ -66,6 +66,7 @@ import (
 	"github.com/namdam97/logmon/backend/internal/shared/audit"
 	"github.com/namdam97/logmon/backend/internal/shared/auth"
 	"github.com/namdam97/logmon/backend/internal/shared/crypto"
+	"github.com/namdam97/logmon/backend/internal/shared/health"
 	"github.com/namdam97/logmon/backend/internal/shared/logger"
 	"github.com/namdam97/logmon/backend/internal/shared/metrics"
 	"github.com/namdam97/logmon/backend/internal/shared/middleware"
@@ -915,15 +916,12 @@ func buildRouter(
 		middleware.Logging(log),
 	)
 
-	r.GET("/healthz", func(c *gin.Context) {
-		pingCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		defer cancel()
-		if err := pool.Ping(pingCtx); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	// Liveness: process còn sống (KHÔNG ping dep — tránh restart oan). Readiness:
+	// ping Postgres (dep tới hạn) để LB/K8s ngừng route traffic khi DB chưa sẵn sàng.
+	r.GET("/healthz", health.Liveness())
+	r.GET("/readyz", health.Readiness(2*time.Second,
+		health.Check{Name: "postgres", Ping: pool.Ping},
+	))
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(mx.Registry(), promhttp.HandlerOpts{})))
 
 	api := r.Group("/api/v1")
@@ -985,10 +983,10 @@ func buildRouter(
 }
 
 // shouldTrace báo otelgin có tạo span cho request không — bỏ qua probe/scrape
-// (/healthz, /metrics) vì chúng tần suất cao và không mang giá trị chẩn đoán.
+// (/healthz, /readyz, /metrics) vì chúng tần suất cao và không mang giá trị chẩn đoán.
 func shouldTrace(c *gin.Context) bool {
 	switch c.Request.URL.Path {
-	case "/healthz", "/metrics":
+	case "/healthz", "/readyz", "/metrics":
 		return false
 	default:
 		return true
